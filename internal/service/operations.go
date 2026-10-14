@@ -9,23 +9,78 @@ import (
 )
 
 func (c *Controller) Read(ctx context.Context, points []Point) error {
+	c.StopPolling()
 	return c.read(ctx, points, 0)
 }
 
 func (c *Controller) read(ctx context.Context, points []Point, generation uint64) error {
+	return c.readMode(ctx, points, generation, false)
+}
+
+func (c *Controller) readMode(ctx context.Context, points []Point, generation uint64, merge bool) error {
 	s, ctx, done, e := c.acquire(ctx, generation)
 	if e != nil {
 		return e
 	}
 	defer done()
+	if generation != 0 {
+		c.mu.Lock()
+		polling := c.snap.Polling
+		c.mu.Unlock()
+		if !polling {
+			return context.Canceled
+		}
+	}
 	aa, e := resolve(points)
 	if e != nil {
 		return e
 	}
-	rr, e := s.d.Read(ctx, aa)
+	rr, e := readBatches(ctx, s.d, aa, nil)
+	taskID := time.Now().UTC().Format("20060102T150405.000000000Z")
+	scope := "节点清单"
+	if merge {
+		scope = aa[0].NodeID
+	}
+	for i := range rr {
+		rr[i].TaskID, rr[i].Scope, rr[i].Complete = taskID, scope, e == nil
+	}
 	c.mu.Lock()
 	if c.s == s && !c.closed {
-		c.snap.Results = rr
+		for i := range rr {
+			for _, n := range c.snap.Nodes {
+				if n.NodeID == rr[i].Address.NodeID {
+					rr[i].DisplayName = n.DisplayName
+					break
+				}
+			}
+		}
+		if merge {
+			for _, r := range rr {
+				found := false
+				for i, old := range c.snap.Results {
+					if old.Address.NodeID == r.Address.NodeID {
+						if r.DisplayName == "" {
+							r.DisplayName = old.DisplayName
+						}
+						c.snap.Results[i] = r
+						found = true
+						break
+					}
+				}
+				if !found {
+					c.snap.Results = append(c.snap.Results, r)
+				}
+			}
+		} else {
+			c.snap.Results = rr
+		}
+		c.snap.ScanStatus = fmt.Sprintf("读取完成 · %d 点", len(aa))
+		if merge {
+			c.snap.ScanStatus = "单点验证完成 · " + aa[0].NodeID
+		}
+		if e != nil {
+			c.snap.ScanStatus = "读取未完成：" + e.Error()
+		}
 		c.snap.LastError = ""
 		if e != nil {
 			c.snap.LastError = e.Error()
@@ -33,7 +88,7 @@ func (c *Controller) read(ctx context.Context, points []Point, generation uint64
 		c.snap.Revision++
 	}
 	c.mu.Unlock()
-	if e != nil {
+	if e != nil && !errors.Is(e, context.Canceled) {
 		c.failure(s, e)
 	}
 	return e
@@ -65,7 +120,7 @@ func (c *Controller) Write(ctx context.Context, req WriteRequest, approved bool)
 	writeErr := e
 	if result.State == "CONFIRMED" {
 		rr, e = s.d.Read(ctx, []device.Address{a})
-		if e == nil && len(rr) == 1 && rr[0].Quality == "GOOD" {
+		if e == nil && len(rr) == 1 && rr[0].Quality == "GOOD" && rr[0].Error == "" {
 			readback = "不一致"
 			if device.ValueEqual(v, rr[0].Value) {
 				readback = "一致"

@@ -44,6 +44,12 @@ type Desktop struct {
 	connectBtn, disconnectBtn, demoBtn, stopDemoBtn, readBtn, pollBtn, stopPollBtn, writeBtn, browseBtn, discoverBtn *widget.Button
 	table, browseTable                                                                                               *widget.Table
 	rows, browseRows                                                                                                 [][]string
+	resultFilter                                                                                                     *widget.Select
+	singleNode, allRoot                                                                                              *widget.Entry
+	verifyBtn, fullBtn, browseFullBtn, stopReadBtn, exportBtn                                                        *widget.Button
+	pointSummary, scanStatus                                                                                         *widget.Label
+	visibleResults                                                                                                   []device.ReadResult
+	checkCancel                                                                                                      context.CancelFunc
 	tabs                                                                                                             *container.AppTabs
 }
 
@@ -68,7 +74,8 @@ func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 			d.showError(err)
 		}
 	})
-	footer := container.NewBorder(widget.NewSeparator(), nil, nil, open, d.recordStatus)
+	help := widget.NewButtonWithIcon("读取帮助", theme.HelpIcon(), d.showPointHelp)
+	footer := container.NewBorder(widget.NewSeparator(), nil, nil, container.NewHBox(help, open), d.recordStatus)
 	d.win.SetContent(container.NewPadded(container.NewBorder(container.NewVBox(header, d.connectionPanel(), d.lastError), footer, nil, nil, d.tabs)))
 	w, h := platform.WorkArea()
 	d.win.Resize(platform.FitSize(fyne.NewSize(1180, 820), w, h, d.win.Canvas().Scale()))
@@ -117,6 +124,9 @@ func (d *Desktop) Shutdown() error {
 	return d.closeErr
 }
 func (d *Desktop) run(fn func(context.Context) error, success func()) {
+	if d.busy != 0 {
+		return
+	}
 	d.mu.Lock()
 	if d.stopped {
 		d.mu.Unlock()
@@ -134,6 +144,10 @@ func (d *Desktop) run(fn func(context.Context) error, success func()) {
 				return
 			}
 			d.busy--
+			if d.busy == 0 && d.checkCancel != nil {
+				d.checkCancel()
+				d.checkCancel = nil
+			}
 			if err != nil {
 				d.showError(err)
 			} else {
@@ -164,6 +178,11 @@ func (d *Desktop) controls() {
 	set(d.demoBtn, idle && d.snapshot.DemoTarget == "")
 	set(d.stopDemoBtn, idle && d.snapshot.DemoTarget != "")
 	set(d.readBtn, idle && connected)
+	set(d.verifyBtn, idle && connected)
+	set(d.fullBtn, idle && connected)
+	set(d.browseFullBtn, idle && connected)
+	set(d.stopReadBtn, d.checkCancel != nil)
+	set(d.exportBtn, len(d.snapshot.Results) > 0)
 	set(d.pollBtn, idle && connected && !d.snapshot.Polling)
 	set(d.stopPollBtn, d.snapshot.Polling)
 	set(d.writeBtn, idle && connected && d.allowWrite.Checked)
@@ -209,18 +228,8 @@ func (d *Desktop) refresh(s service.Snapshot) {
 	} else {
 		d.recordStatus.Importance = widget.MediumImportance
 	}
-	d.rows = [][]string{{"NodeID", "类型", "值", "质量 / 状态码", "源时间 / 错误"}}
-	for _, r := range s.Results {
-		detail := r.SourceTime.Local().Format("15:04:05.000")
-		if r.SourceTime.IsZero() {
-			detail = "—"
-		}
-		if r.Error != "" {
-			detail = r.Error
-		}
-		d.rows = append(d.rows, []string{r.Address.NodeID, string(r.Value.Type), device.FormatValue(r.Value), fmt.Sprintf("%s / 0x%08X", r.Quality, r.StatusCode), detail})
-	}
-	d.table.Refresh()
+	d.refreshPointRows()
+	d.scanStatus.SetText(s.ScanStatus)
 	d.browseRows = [][]string{{"NodeID", "显示名称", "节点类型"}}
 	for _, n := range s.Nodes {
 		d.browseRows = append(d.browseRows, []string{n.NodeID, n.DisplayName, n.Class})
@@ -270,8 +279,8 @@ func (d *Desktop) points() ([]service.Point, error) {
 	}
 	var pp []service.Point
 	for _, line := range strings.Split(d.addresses.Text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		a, err := device.ParseAddress(line, device.DataType(d.kind.Selected), n)
@@ -320,25 +329,24 @@ func (d *Desktop) copyEvents() {
 	d.win.Clipboard().SetContent(string(b))
 }
 func (d *Desktop) confirmWrite() {
-	pp, err := d.points()
-	if err != nil {
-		d.showError(err)
+	if d.busy != 0 {
 		return
 	}
-	if len(pp) != 1 {
-		d.showError(fmt.Errorf("写入须选择一个节点，可点击读取结果行填入"))
+	p, err := d.singlePoint()
+	if err != nil {
+		d.showError(err)
 		return
 	}
 	s := d.controller.Snapshot()
 	if !d.allowWrite.Checked || s.State != "connected" {
 		return
 	}
-	a, _ := device.ParseAddress(pp[0].Address, pp[0].Type, pp[0].Count)
+	a, _ := device.ParseAddress(p.Address, p.Type, p.Count)
 	if _, err = device.ParseValue(a, d.writeValue.Text); err != nil {
 		d.showError(err)
 		return
 	}
-	req := service.WriteRequest{Point: pp[0], Value: d.writeValue.Text, Generation: s.Generation}
+	req := service.WriteRequest{Point: p, Value: d.writeValue.Text, Generation: s.Generation}
 	dialog.ShowConfirm("确认 OPC UA 写入", fmt.Sprintf("Endpoint: %s\nNodeID: %s\n类型: %s，数量: %d\n值: %s", s.Target, req.Point.Address, req.Point.Type, req.Point.Count, req.Value), func(ok bool) {
 		if ok && d.allowWrite.Checked {
 			d.run(func(ctx context.Context) error { return d.controller.Write(ctx, req, true) }, nil)

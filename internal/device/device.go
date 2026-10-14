@@ -19,14 +19,19 @@ const (
 )
 
 type ReadResult struct {
-	Address    Address   `json:"address"`
-	Value      Value     `json:"value"`
-	Quality    string    `json:"quality"`
-	StatusCode uint32    `json:"status_code"`
-	Time       time.Time `json:"time"`
-	SourceTime time.Time `json:"source_time,omitempty"`
-	ServerTime time.Time `json:"server_time,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Address     Address   `json:"address"`
+	Value       Value     `json:"value"`
+	Quality     string    `json:"quality"`
+	StatusCode  uint32    `json:"status_code"`
+	Time        time.Time `json:"time"`
+	SourceTime  time.Time `json:"source_time,omitempty"`
+	ServerTime  time.Time `json:"server_time,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	Execution   string    `json:"execution,omitempty"`
+	TaskID      string    `json:"task_id,omitempty"`
+	DisplayName string    `json:"display_name,omitempty"`
+	Scope       string    `json:"scope,omitempty"`
+	Complete    bool      `json:"scope_complete"`
 }
 type WriteSegment struct {
 	Address Address `json:"address"`

@@ -181,7 +181,7 @@ func Run(ctx context.Context, args []string, out, errout io.Writer) (code int) {
 			return 1
 		}
 		for _, r := range rr {
-			if r.Quality != "GOOD" {
+			if r.Quality != "GOOD" || r.Error != "" {
 				code = 1
 			}
 		}
@@ -207,7 +207,7 @@ func Run(ctx context.Context, args []string, out, errout io.Writer) (code int) {
 				err = e
 			} else if len(rr) == 1 {
 				result.Readback = &rr[0]
-				result.Verified = rr[0].Quality == "GOOD" && device.ValueEqual(value, rr[0].Value)
+				result.Verified = rr[0].Quality == "GOOD" && rr[0].Error == "" && device.ValueEqual(value, rr[0].Value)
 			}
 		}
 		if jsonOut {

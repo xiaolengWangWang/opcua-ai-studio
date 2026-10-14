@@ -1,8 +1,8 @@
 # OPC UA AI Studio
 
-参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。首版为 `0.1.0`。
+参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.2.0`。
 
-Windows 发行包见 [GitHub Release v0.1.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.1.0)，更新说明见 [版本说明](docs/releases/v0.1.0.md)。
+Windows 发行包见 [GitHub Release v0.2.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.2.0)，更新说明见 [版本说明](docs/releases/v0.2.0.md)。
 
 ## Windows 桌面
 
@@ -11,7 +11,11 @@ Windows 发行包见 [GitHub Release v0.1.0](https://github.com/xiaolengWangWang
 1. 点击“启动本机演示”，读取 `ns=2;s=Counter`，初值为 Int32 42。
 2. 输入 123，勾选“允许写入”，点击“写入并读回”，确认 Endpoint、NodeID、类型和数值。
 3. 查看 `CONFIRMED` 和独立读回“一致”。
-4. 节点浏览页从 `i=85` 浏览 Objects，进入演示命名空间；点击变量填入读写页。
+4. 节点浏览页从 `i=85` 浏览 Objects，进入演示命名空间；点击变量追加到清单并填入单点输入。
+5. 点击“全量读取”，演示父节点 `ns=2;i=85` 包含六个变量；可停止并保留部分结果。
+6. 单点验证 `ns=2;s=Missing`，得到 BAD，同时保留其他 GOOD 点；筛选并导出 CSV。
+
+单点验证使用独立输入，结果选择不覆盖批量清单。全量递归遍历最多 10,000 个唯一节点，读取默认每批 100 点，支持服务器批次限制和停止。原始质量 GOOD/BAD/UNCERTAIN 与请求、解析、类型错误分别记录；未收到 DataValue 的质量为 UNKNOWN。CSV 保存冻结快照，包括范围、任务 ID 和完整性，兼容中文并保护 64 位标量整数。详细离线说明见 [点位读取帮助](assets/help/points.md)，也可在程序中点击“读取帮助”。
 
 连接现场服务器时输入完整 Endpoint，如 `opc.tcp://192.168.1.10:4840`。先点击“发现端点”查看服务器提供的策略和认证方式，在“安全与认证”中设置一致的参数。支持匿名和用户名认证；加密连接须提供客户端证书、RSA 私钥及可信服务器证书，服务器证书按完整 DER 内容固定比对，不自动降级。
 
@@ -60,10 +64,10 @@ go build -o bin/opcua-sim.exe ./cmd/opcua-sim
 ```powershell
 go test -tags ci -count=1 ./...
 go vet -tags ci ./...
-powershell -NoProfile -ExecutionPolicy Bypass -File build/windows.ps1 -Version 0.1.0 -CompilerRoot D:\tools\winlibs-gcc16\mingw64
+powershell -NoProfile -ExecutionPolicy Bypass -File build/windows.ps1 -Version 0.2.0 -CompilerRoot D:\tools\winlibs-gcc16\mingw64
 ```
 
-Windows GUI 构建需要 x64 MinGW；运行程序无需编译环境，需要支持 OpenGL 的图形驱动。产物位于 `dist/windows-gui/`，ZIP 包含 GUI、CLI、模拟器、说明和版本文件；校验与构建清单保存在 ZIP 同级目录。`-tags ci` 使用 Fyne 软件驱动进行自动化测试。
+Windows GUI 构建需要 x64 MinGW；运行程序无需编译环境，需要支持 OpenGL 的图形驱动。最终主程序 `OPCUAAIStudio.exe` 上限为 30,000,000 字节，写入图标及版本资源后超限则构建失败。产物位于 `dist/windows-gui/`，ZIP 包含 GUI、CLI、模拟器、说明和版本文件；校验与构建清单保存在 ZIP 同级目录。`-tags ci` 使用 Fyne 软件驱动进行自动化测试。
 
 演示节点：Counter、Temperature、Enabled、Message、Samples、ReadOnly，均在 ns=2；ReadOnly 只读。首版支持单工作区、Endpoint 发现、浏览分页、节点读写和轮询；历史读取、方法调用、原生订阅不在本版范围。本机演示是协议测试服务，尚未通过现场服务器或 PLC 实机认证。
 

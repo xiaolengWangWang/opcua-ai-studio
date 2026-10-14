@@ -1,4 +1,4 @@
-param([string]$Version='0.1.0',[string]$CompilerRoot='D:\tools\winlibs-gcc16\mingw64')
+param([string]$Version='0.2.0',[string]$CompilerRoot='D:\tools\winlibs-gcc16\mingw64')
 $ErrorActionPreference='Stop'
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must be a numeric major.minor.patch' }
 $repoRoot=Split-Path -Parent $PSScriptRoot
@@ -50,7 +50,9 @@ try {
  try {$readmeEntry=$archive.Entries | Where-Object {$_.FullName.Replace('\','/').EndsWith('/README.txt')};if(-not $readmeEntry){throw 'Archive README is missing'};$reader=[IO.StreamReader]::new($readmeEntry.Open(),[Text.Encoding]::UTF8);try{$packaged=$reader.ReadToEnd();if(-not $packaged.Contains($Version) -or -not $packaged.Contains('50 MB') -or $packaged.Contains('E-SafeNet') -or $packaged.Contains([string][char]0)){throw 'Archive README verification failed'}}finally{$reader.Dispose()}}finally{$archive.Dispose()}
  $hash=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
  Write-PackageText (Join-Path $guiRoot 'SHA256SUMS.txt') "$hash  $([IO.Path]::GetFileName($zip))`n" ([Text.UTF8Encoding]::new($false))
- $manifest=@{version=$Version;fileVersion="$Version.0";commit='initial-local-project';dirty= -not [string]::IsNullOrWhiteSpace((git status --porcelain | Out-String));compiler=$gcc;zip=[IO.Path]::GetFileName($zip);sha256=$hash;exeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();exeBytes=$mainExeBytes;exeLimitBytes=30000000;bytes=(Get-Item -LiteralPath $zip).Length}
+ $sourceCommit=(git rev-parse HEAD | Out-String).Trim()
+ if($LASTEXITCODE -ne 0){throw 'Cannot determine build source commit'}
+ $manifest=@{version=$Version;fileVersion="$Version.0";commit=$sourceCommit;dirty= -not [string]::IsNullOrWhiteSpace((git status --porcelain | Out-String));compiler=$gcc;zip=[IO.Path]::GetFileName($zip);sha256=$hash;exeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();exeBytes=$mainExeBytes;exeLimitBytes=30000000;bytes=(Get-Item -LiteralPath $zip).Length}
  [IO.File]::WriteAllText((Join-Path $guiRoot 'build-manifest.json'),($manifest | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
  Write-Output $zip; Write-Output "SHA256 $hash"
 } finally {

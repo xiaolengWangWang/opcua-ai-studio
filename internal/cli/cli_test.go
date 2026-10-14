@@ -37,3 +37,22 @@ func TestCLIReadWriteAndWriteGate(t *testing.T) {
 		t.Fatalf("write %d %s", code, stderr.String())
 	}
 }
+
+func TestCLITypeMismatchReturnsFailureWithOriginalQuality(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	s, err := simulator.Start(ctx, "opc.tcp://127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var out, stderr bytes.Buffer
+	code := Run(ctx, []string{"-endpoint", s.Endpoint, "-type", "String", "-json", "read", simulator.CounterNode}, &out, &stderr)
+	var rr []device.ReadResult
+	if err := json.Unmarshal(out.Bytes(), &rr); err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || len(rr) != 1 || rr[0].Quality != "GOOD" || rr[0].Error == "" {
+		t.Fatalf("mismatch reported success: code=%d, results=%+v", code, rr)
+	}
+}

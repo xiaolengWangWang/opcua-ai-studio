@@ -20,6 +20,7 @@ type Options struct {
 	Dial      func(context.Context, string, opcua.Options) (device.Driver, error)
 }
 type Snapshot struct {
+	ScanStatus                                                                     string
 	Revision, Generation                                                           uint64
 	State, Target, Family, DemoTarget, LastError, RecordDir, RecordError, Readback string
 	Polling                                                                        bool
@@ -228,6 +229,7 @@ func (c *Controller) Connect(ctx context.Context, cfg Config) error {
 	c.snap.Family = "OPC UA"
 	c.snap.LastError = ""
 	c.snap.Results = nil
+	c.snap.ScanStatus = ""
 	c.snap.Nodes = nil
 	c.snap.WriteResult = nil
 	c.snap.Readback = ""

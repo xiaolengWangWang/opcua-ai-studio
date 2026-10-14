@@ -12,6 +12,17 @@ func TestNodeIDPreservesCaseAndPunctuation(t *testing.T) {
 	}
 }
 
+func TestStringNodeIDWithSemicolonCanBeParsedAgain(t *testing.T) {
+	a, err := ParseAddress("ns=0;s=Pump;State ", "Auto", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := ParseAddress(a.NodeID, "Auto", 1)
+	if err != nil || again.NodeID != "ns=0;s=Pump;State " {
+		t.Fatalf("normalized identifier became invalid: %+v %v", again, err)
+	}
+}
+
 func TestInvalidNodeIDsAndTypes(t *testing.T) {
 	for _, id := range []string{"", "DB1.DBD0", "ns=999999;i=1", "ns=2;i=-1"} {
 		if _, err := ParseAddress(id, "Int32", 1); err == nil {

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/png"
+	"io"
 	"net"
 	"net/url"
 	"opcua-ai-studio/internal/device"
@@ -14,10 +17,11 @@ import (
 	"opcua-ai-studio/internal/simulator"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-func runSmoke(ctx context.Context, c *service.Controller, capture func() image.Image, dir string) error {
+func runSmoke(ctx context.Context, c *service.Controller, capture func() image.Image, export func(io.Writer, string) error, dir string) error {
 	defer c.Close()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -50,6 +54,35 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 			return fmt.Errorf("演示读取失败: %s", r.Error)
 		}
 	}
+	if err := c.ReadAll(ctx, "ns=2;i=85"); err != nil {
+		return err
+	}
+	if len(c.Snapshot().Results) != 6 {
+		return fmt.Errorf("全量读取没有取得六个演示变量")
+	}
+	if err := c.VerifyPoint(ctx, service.Point{Address: "ns=2;s=Missing", Type: "Auto", Count: 1}); err != nil {
+		return err
+	}
+	s = c.Snapshot()
+	good, bad := 0, 0
+	counter := ""
+	for _, r := range s.Results {
+		if r.Quality == "GOOD" {
+			good++
+		}
+		if r.Quality == "BAD" {
+			bad++
+		}
+		if !r.Complete || r.TaskID == "" {
+			return fmt.Errorf("任务范围信息缺失")
+		}
+		if r.Address.NodeID == simulator.CounterNode {
+			counter = device.FormatValue(r.Value)
+		}
+	}
+	if good != 6 || bad != 1 || counter != "123" {
+		return fmt.Errorf("质量区分或单点结果保留失败")
+	}
 	im := capture()
 	if im == nil {
 		return fmt.Errorf("没有 GUI 截图")
@@ -65,6 +98,28 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 	}
 	if closeErr != nil {
 		return closeErr
+	}
+	for _, filter := range []string{"全部", "BAD"} {
+		var buf bytes.Buffer
+		if err = export(&buf, filter); err != nil {
+			return err
+		}
+		rows, e := csv.NewReader(strings.NewReader(strings.TrimPrefix(buf.String(), "\ufeff"))).ReadAll()
+		if e != nil {
+			return e
+		}
+		name := "points-all.csv"
+		if filter == "BAD" {
+			name = "points-bad.csv"
+			if len(rows) != 2 || rows[1][1] != "ns=2;s=Missing" || rows[1][4] != "BAD" {
+				return fmt.Errorf("BAD 导出错误")
+			}
+		} else if len(rows) != 8 {
+			return fmt.Errorf("全量结果导出行数错误")
+		}
+		if err = os.WriteFile(filepath.Join(dir, name), buf.Bytes(), 0644); err != nil {
+			return err
+		}
 	}
 	if err = c.Close(); err != nil {
 		return err
@@ -111,9 +166,11 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 		Version, Target, Initial, Readback, WriteState string
 		Passed, PortReleased                           bool
 		Packets, Nodes                                 int
+		GoodPoints, BadPoints                          int
+		CSVVerified                                    bool
 		Archives                                       []string
 		Time                                           time.Time
-	}{version, s.Target, "42", device.FormatValue(s.Results[0].Value), s.WriteResult.State, true, true, packets, len(s.Nodes), files, time.Now().UTC()}
+	}{version, s.Target, "42", counter, s.WriteResult.State, true, true, packets, len(s.Nodes), good, bad, true, files, time.Now().UTC()}
 	b, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err

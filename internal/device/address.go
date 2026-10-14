@@ -16,6 +16,8 @@ type Address struct {
 
 var Types = []string{"Auto", "Boolean", "SByte", "Byte", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Float", "Double", "String", "DateTime", "ByteString"}
 
+var explicitNodeID = regexp.MustCompile(`^(?:ns=[0-9]+;)?[isgb]=`)
+
 func NormalizeType(kind DataType) DataType {
 	for _, t := range Types {
 		if strings.EqualFold(string(kind), t) {
@@ -25,14 +27,36 @@ func NormalizeType(kind DataType) DataType {
 	return kind
 }
 func ParseAddress(text string, kind DataType, count int) (Address, error) {
-	a := Address{NodeID: strings.TrimSpace(text), Type: NormalizeType(kind), Count: count}
-	return a, a.Validate()
+	text = strings.TrimLeft(text, " \t\r\n")
+	// Whitespace after s= belongs to the server's string identifier.
+	if !strings.HasPrefix(text, "s=") && !strings.Contains(text, ";s=") {
+		text = strings.TrimSpace(text)
+	}
+	if strings.HasPrefix(text, "s=") {
+		text = "ns=0;" + text
+	}
+	a := Address{NodeID: text, Type: NormalizeType(kind), Count: count}
+	if err := a.Validate(); err != nil {
+		return a, err
+	}
+	n, _ := ua.ParseNodeID(a.NodeID)
+	a.NodeID = FormatNodeID(n)
+	return a, nil
+}
+
+// FormatNodeID keeps namespace zero explicit for strings: the SDK parser
+// otherwise interprets a semicolon inside the identifier as a namespace field.
+func FormatNodeID(n *ua.NodeID) string {
+	if n.Type() == ua.NodeIDTypeString {
+		return fmt.Sprintf("ns=%d;s=%s", n.Namespace(), n.StringID())
+	}
+	return n.String()
 }
 func (a Address) Validate() error {
 	if a.NodeID == "" {
 		return fmt.Errorf("请输入 NodeID，例如 ns=2;s=Counter")
 	}
-	if !regexp.MustCompile(`^(?:ns=[0-9]+;)?[isgb]=`).MatchString(a.NodeID) {
+	if !explicitNodeID.MatchString(a.NodeID) {
 		return fmt.Errorf("NodeID 须明确指定 i=、s=、g= 或 b= 标识")
 	}
 	if _, err := ua.ParseNodeID(a.NodeID); err != nil {

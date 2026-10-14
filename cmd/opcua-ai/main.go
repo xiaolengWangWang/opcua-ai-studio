@@ -6,6 +6,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"image"
+	"io"
 	"log"
 	"opcua-ai-studio/internal/service"
 	"opcua-ai-studio/internal/ui"
@@ -15,7 +16,7 @@ import (
 	"time"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 func main() {
 	smokeDir := flag.String("smoke-test", "", "验证自有本机演示并保存 GUI 截图与记录后退出")
@@ -41,6 +42,10 @@ func main() {
 				var im image.Image
 				fyne.DoAndWait(func() { im = d.Window().Canvas().Capture() })
 				return im
+			}, func(out io.Writer, filter string) error {
+				var exportErr error
+				fyne.DoAndWait(func() { exportErr = d.ExportPointsCSV(out, filter) })
+				return exportErr
 			}, *smokeDir)
 			result <- err
 			fyne.Do(a.Quit)

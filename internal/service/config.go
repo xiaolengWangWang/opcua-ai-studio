@@ -30,8 +30,8 @@ func (cfg Config) validate() (opcua.Options, error) {
 	return cfg.Options, cfg.Options.Validate()
 }
 func resolve(points []Point) ([]device.Address, error) {
-	if len(points) < 1 || len(points) > 1024 {
-		return nil, fmt.Errorf("请输入 1..1024 个节点")
+	if len(points) < 1 || len(points) > 10000 {
+		return nil, fmt.Errorf("请输入 1..10000 个节点")
 	}
 	aa := make([]device.Address, len(points))
 	for i, p := range points {

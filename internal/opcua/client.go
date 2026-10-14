@@ -205,7 +205,7 @@ func (c *Client) event(seq uint64, dir device.Direction, op string, targets []de
 	}
 	if dir == device.DirRX {
 		for _, r := range results {
-			if r.Read != nil && r.Read.Quality == "BAD" {
+			if r.Read != nil && (r.Read.Quality == "BAD" || r.Read.Error != "") {
 				status = device.StatusException
 			}
 			if r.Write != nil && r.Write.State != "CONFIRMED" {
@@ -243,9 +243,10 @@ func (c *Client) Read(ctx context.Context, aa []device.Address) ([]device.ReadRe
 	rr := make([]device.ReadResult, len(aa))
 	events := make([]device.EventResult, len(aa))
 	for i, r := range res.Results {
-		v := device.ReadResult{Address: aa[i], Time: time.Now(), Quality: "GOOD"}
+		v := device.ReadResult{Address: aa[i], Time: time.Now(), Quality: "GOOD", Execution: "READ"}
 		if r == nil {
-			v.Quality = "BAD"
+			v.Quality = "UNKNOWN"
+			v.Execution = "REQUEST_FAILED"
 			v.Error = "服务器返回空 DataValue"
 		} else {
 			v.StatusCode = uint32(r.Status)
@@ -261,12 +262,15 @@ func (c *Client) Read(ctx context.Context, aa []device.Address) ([]device.ReadRe
 			if r.Value != nil {
 				v.Value, err = device.FromNative(r.Value.Value())
 				if err != nil {
-					v.Quality = "BAD"
-					v.Error = err.Error()
+					v.Execution = "PARSE_FAILED"
+					if v.Error != "" {
+						v.Error += "; "
+					}
+					v.Error += err.Error()
 				}
 			}
-			if v.Quality != "BAD" && aa[i].Type != "Auto" && v.Value.Type != aa[i].Type {
-				v.Quality = "BAD"
+			if v.Quality != "BAD" && v.Execution == "READ" && aa[i].Type != "Auto" && v.Value.Type != aa[i].Type {
+				v.Execution = "TYPE_MISMATCH"
 				v.Error = fmt.Sprintf("节点类型为 %s，所选类型为 %s", v.Value.Type, aa[i].Type)
 			}
 		}
@@ -348,7 +352,7 @@ func (c *Client) Browse(ctx context.Context, node string) (out []device.Node, er
 	if err != nil {
 		return nil, err
 	}
-	n, _ := ua.ParseNodeID(node)
+	n, _ := ua.ParseNodeID(a.NodeID)
 	ctx, cancel := context.WithTimeout(ctx, c.options.Timeout)
 	defer cancel()
 	seq := c.seq.Add(1)
@@ -383,7 +387,7 @@ func (c *Client) Browse(ctx context.Context, node string) (out []device.Node, er
 			if ref == nil || ref.NodeID == nil || ref.NodeID.NodeID == nil {
 				continue
 			}
-			x := device.Node{NodeID: ref.NodeID.NodeID.String(), Class: ref.NodeClass.String()}
+			x := device.Node{NodeID: device.FormatNodeID(ref.NodeID.NodeID), Class: ref.NodeClass.String()}
 			if ref.BrowseName != nil {
 				x.BrowseName = ref.BrowseName.Name
 			}
