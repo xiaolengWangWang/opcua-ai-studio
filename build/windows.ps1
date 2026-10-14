@@ -25,6 +25,8 @@ try {
  $exe=Join-Path $stage 'OPCUAAIStudio.exe'
  Invoke-Native {go build -trimpath -tags no_emoji -ldflags "-s -w -H windowsgui -X main.version=$Version -extldflags=-static" -o $exe ./cmd/opcua-ai}
  Invoke-Native {go run github.com/tc-hib/go-winres@v0.3.3 patch --no-backup --in assets/icon/windows/winres.json --product-version $Version --file-version "$Version.0" $exe}
+ $mainExeBytes=(Get-Item -LiteralPath $exe).Length
+ if($mainExeBytes -gt 30000000){throw "OPCUAAIStudio.exe exceeds 30 MB (30000000 bytes): $mainExeBytes bytes"}
  Invoke-Native {go build -trimpath -ldflags '-s -w' -o (Join-Path $stage 'opcua-cli.exe') ./cmd/opcua-cli}
  Invoke-Native {go build -trimpath -ldflags '-s -w' -o (Join-Path $stage 'opcua-sim.exe') ./cmd/opcua-sim}
  $readme=Get-Content -LiteralPath platform/windows/README-gui.template -Encoding UTF8 -Raw
@@ -48,7 +50,7 @@ try {
  try {$readmeEntry=$archive.Entries | Where-Object {$_.FullName.Replace('\','/').EndsWith('/README.txt')};if(-not $readmeEntry){throw 'Archive README is missing'};$reader=[IO.StreamReader]::new($readmeEntry.Open(),[Text.Encoding]::UTF8);try{$packaged=$reader.ReadToEnd();if(-not $packaged.Contains($Version) -or -not $packaged.Contains('50 MB') -or $packaged.Contains('E-SafeNet') -or $packaged.Contains([string][char]0)){throw 'Archive README verification failed'}}finally{$reader.Dispose()}}finally{$archive.Dispose()}
  $hash=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
  Write-PackageText (Join-Path $guiRoot 'SHA256SUMS.txt') "$hash  $([IO.Path]::GetFileName($zip))`n" ([Text.UTF8Encoding]::new($false))
- $manifest=@{version=$Version;fileVersion="$Version.0";commit='initial-local-project';dirty= -not [string]::IsNullOrWhiteSpace((git status --porcelain | Out-String));compiler=$gcc;zip=[IO.Path]::GetFileName($zip);sha256=$hash;exeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();bytes=(Get-Item -LiteralPath $zip).Length}
+ $manifest=@{version=$Version;fileVersion="$Version.0";commit='initial-local-project';dirty= -not [string]::IsNullOrWhiteSpace((git status --porcelain | Out-String));compiler=$gcc;zip=[IO.Path]::GetFileName($zip);sha256=$hash;exeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();exeBytes=$mainExeBytes;exeLimitBytes=30000000;bytes=(Get-Item -LiteralPath $zip).Length}
  [IO.File]::WriteAllText((Join-Path $guiRoot 'build-manifest.json'),($manifest | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
  Write-Output $zip; Write-Output "SHA256 $hash"
 } finally {
