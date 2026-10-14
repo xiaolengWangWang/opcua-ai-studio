@@ -1,0 +1,15 @@
+{
+  "Version": "0.1.0",
+  "Target": "opc.tcp://127.0.0.1:51647",
+  "Initial": "42",
+  "Readback": "123",
+  "WriteState": "CONFIRMED",
+  "Passed": true,
+  "PortReleased": true,
+  "Packets": 10,
+  "Nodes": 6,
+  "Archives": [
+    "D:\\workspace\\opcua-ai-studio\\docs\\validation\\final-windows-smoke\\records\\packets-20261013-001.sqlite3"
+  ],
+  "Time": "2026-10-13T14:26:37.4392808Z"
+}

@@ -1,0 +1,11 @@
+/bin/
+/dist/
+*.test
+*.out
+.DS_Store
+*.syso
+/.superpowers/
+/.worktrees/
+/docs/validation/**/records/
+/docs/validation/*.log
+/.test-tmp/

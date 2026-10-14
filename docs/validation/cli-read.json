@@ -1,0 +1,47 @@
+[
+  {
+    "address": {
+      "node_id": "ns=2;s=Counter",
+      "type": "Auto",
+      "count": 1
+    },
+    "value": {
+      "integer": "42",
+      "type": "Int32"
+    },
+    "quality": "GOOD",
+    "status_code": 0,
+    "time": "2026-10-13T22:19:28.2780038+08:00",
+    "source_time": "0001-01-01T00:00:00Z",
+    "server_time": "0001-01-01T00:00:00Z"
+  },
+  {
+    "address": {
+      "node_id": "ns=2;s=Samples",
+      "type": "Auto",
+      "count": 1
+    },
+    "value": {
+      "elements": [
+        {
+          "integer": "1",
+          "type": "Int32"
+        },
+        {
+          "integer": "2",
+          "type": "Int32"
+        },
+        {
+          "integer": "3",
+          "type": "Int32"
+        }
+      ],
+      "type": "Int32"
+    },
+    "quality": "GOOD",
+    "status_code": 0,
+    "time": "2026-10-13T22:19:28.2780038+08:00",
+    "source_time": "0001-01-01T00:00:00Z",
+    "server_time": "0001-01-01T00:00:00Z"
+  }
+]
