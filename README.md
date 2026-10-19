@@ -2,7 +2,7 @@
 
 参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.3.0`。
 
-Windows 发行包见 [Gitee Release v0.3.0](https://gitee.com/sun_xuanqi/opcua_ai_studio/releases/tag/v0.3.0) 或 [GitHub Release v0.3.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.3.0)，更新说明见 [版本说明](docs/releases/v0.3.0.md)。
+Windows 发行包见 [Gitee Release v0.3.0](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.3.0) 或 [GitHub Release v0.3.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.3.0)，更新说明见 [版本说明](docs/releases/v0.3.0.md)。
 
 ## Windows 桌面
 
