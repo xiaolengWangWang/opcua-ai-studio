@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"errors"
+	"fmt"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"opcua-ai-studio/internal/service"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCSVExportSeparatesQualityAndPreservesNodeIDs(t *testing.T) {
@@ -68,8 +70,8 @@ func TestQualityFilterSelectsTheVisibleBadPoint(t *testing.T) {
 		{Address: device.Address{NodeID: "ns=2;s=Bad", Type: "Auto", Count: 1}, Quality: "BAD", Error: "unknown node"},
 	}})
 	d.resultFilter.SetSelected("BAD")
-	if len(d.rows) != 2 || d.rows[1][0] != "ns=2;s=Bad" {
-		t.Fatalf("BAD filter includes another quality: %+v", d.rows)
+	if len(d.visible) != 1 || d.pointCell(1, 0) != "ns=2;s=Bad" {
+		t.Fatalf("BAD filter includes another quality: %+v", d.visible)
 	}
 	d.addresses.SetText("ns=2;s=Good\nns=2;s=Bad")
 	d.table.OnSelected(widget.TableCellID{Row: 1, Col: 0})
@@ -89,8 +91,8 @@ func TestBrowseAddsWithoutReplacingOrDuplicatingTheList(t *testing.T) {
 	defer d.Shutdown()
 	d.addresses.SetText("ns=2;s=First")
 	d.refresh(service.Snapshot{Revision: 99, Nodes: []device.Node{{NodeID: "ns=2;s=Second", Class: "Variable"}}})
-	d.browseTable.OnSelected(widget.TableCellID{Row: 1})
-	d.browseTable.OnSelected(widget.TableCellID{Row: 1})
+	d.browseTable.OnSelected(widget.TableCellID{Row: 1, Col: 1})
+	d.browseTable.OnSelected(widget.TableCellID{Row: 1, Col: 1})
 	if d.addresses.Text != "ns=2;s=First\nns=2;s=Second" {
 		t.Fatalf("list replaced or duplicate added: %q", d.addresses.Text)
 	}
@@ -153,5 +155,78 @@ func TestCSVUsesEachRowsTaskCompleteness(t *testing.T) {
 	}
 	if rows[1][11] != "完成" || rows[2][11] != "未完成" {
 		t.Fatalf("task status overwritten by latest single read: %+v", rows)
+	}
+}
+
+func TestBrowseSelectionTogglesAndSelectsAll(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	c := service.New(service.Options{RecordDir: t.TempDir()})
+	d := NewDesktop(a, c, "test")
+	defer d.Shutdown()
+	d.refresh(service.Snapshot{Revision: 99, State: "connected", Nodes: []device.Node{{NodeID: "ns=2;s=A", Class: "Object"}, {NodeID: "ns=2;s=B", Class: "Variable"}}})
+	list := d.addresses.Text
+	d.browseTable.OnSelected(widget.TableCellID{Row: 2, Col: 0})
+	if len(d.browseSelection) != 1 || d.browseCell(2, 0) != "■" || d.addresses.Text != list {
+		t.Fatalf("checkbox column did not only select: %+v %q", d.browseSelection, d.addresses.Text)
+	}
+	d.browseTable.OnSelected(widget.TableCellID{Row: 2, Col: 0})
+	if len(d.browseSelection) != 0 {
+		t.Fatal("second click did not clear the selection")
+	}
+	d.selectAllBtn.OnTapped()
+	if len(d.browseSelection) != 2 || d.browseSelection[0].NodeID != "ns=2;s=A" || d.readSelectedBtn.Disabled() {
+		t.Fatalf("select all: %+v", d.browseSelection)
+	}
+}
+
+func TestFiltersFindMissingAndControlPoints(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	c := service.New(service.Options{RecordDir: t.TempDir()})
+	d := NewDesktop(a, c, "test")
+	defer d.Shutdown()
+	rr := []device.ReadResult{
+		{Address: device.Address{NodeID: "ns=2;s=Missing", Type: "Float", Count: 1}, Quality: "BAD", StatusCode: 0x80340000},
+		{Address: device.Address{NodeID: "ns=2;s=Set", Type: "Auto", Count: 1}, Quality: "GOOD", Value: device.Value{Type: "Double", Real: 1}, NodeAttributes: device.NodeAttributes{Access: "READ_WRITE"}},
+	}
+	d.refresh(service.Snapshot{Revision: 99, State: "connected", Results: rr})
+	for filter, node := range map[string]string{"不存在": "ns=2;s=Missing", "可写（控制点位）": "ns=2;s=Set"} {
+		d.resultFilter.SetSelected(filter)
+		if len(d.visible) != 1 || d.pointCell(1, 0) != node {
+			t.Fatalf("%s: %+v", filter, d.visible)
+		}
+	}
+	d.resultFilter.SetSelected("不存在")
+	d.table.OnSelected(widget.TableCellID{Row: 1, Col: 0})
+	if d.kind.Selected != "Float" {
+		t.Fatalf("imported type not kept for writing: %s", d.kind.Selected)
+	}
+	if d.pointCell(1, 1) != "Float" || pointRow(&rr[1])[2] != "读写" {
+		t.Fatal("type or access column missing")
+	}
+}
+
+func TestRefreshOf50000PointsIsCheap(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	c := service.New(service.Options{RecordDir: t.TempDir()})
+	d := NewDesktop(a, c, "test")
+	defer d.Shutdown()
+	rr := make([]device.ReadResult, 50000)
+	nodes := make([]device.Node, len(rr))
+	for i := range rr {
+		rr[i] = device.ReadResult{Address: device.Address{NodeID: fmt.Sprintf("ns=2;s=Tag%d", i), Type: "Auto", Count: 1}, Quality: "GOOD", Value: device.Value{Type: "Double", Real: float64(i)}}
+		nodes[i] = device.Node{NodeID: rr[i].Address.NodeID, Class: "Variable"}
+	}
+	start := time.Now()
+	for rev := uint64(100); rev < 110; rev++ {
+		d.refresh(service.Snapshot{Revision: rev, State: "connected", Results: rr, Nodes: nodes})
+	}
+	if elapsed := time.Since(start) / 10; elapsed > 50*time.Millisecond {
+		t.Fatalf("refresh of 50000 points takes %v", elapsed)
+	}
+	if len(d.visible) != 50000 || d.pointCell(50000, 0) != "ns=2;s=Tag49999" {
+		t.Fatal("rows lost")
 	}
 }

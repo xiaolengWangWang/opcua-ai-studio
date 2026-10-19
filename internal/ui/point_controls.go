@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -64,10 +65,18 @@ func (d *Desktop) startFullRead(root string) {
 	d.runCheck(func(ctx context.Context) error { return d.controller.ReadAll(ctx, root) }, nil)
 }
 
-func matchesPoint(r device.ReadResult, filter string) bool {
+// Filters lists the result filters; 不存在 and 可写 help check imported
+// attribute sheets and control points.
+var filters = []string{"全部", "GOOD", "BAD", "UNCERTAIN", "不存在", "可写（控制点位）", "请求失败", "解析/类型错误", "未读取"}
+
+func matchesPoint(r *device.ReadResult, filter string) bool {
 	switch filter {
 	case "全部":
 		return true
+	case "不存在":
+		return r.Missing()
+	case "可写（控制点位）":
+		return r.Writable()
 	case "请求失败":
 		return r.Execution == "REQUEST_FAILED"
 	case "解析/类型错误":
@@ -79,40 +88,92 @@ func matchesPoint(r device.ReadResult, filter string) bool {
 	}
 }
 
+var pointHeader = []string{"NodeID", "类型", "读写", "值", "质量 / 状态码", "执行状态 / 时间 / 错误"}
+
+var accessNames = map[string]string{"READ": "只读", "READ_WRITE": "读写", "WRITE": "只写", "NONE": "无权限"}
+
+func pointRow(r *device.ReadResult) []string {
+	detail := r.Execution
+	if !r.SourceTime.IsZero() {
+		detail += " · " + r.SourceTime.Local().Format("15:04:05.000")
+	}
+	if r.Error != "" {
+		detail += " · " + r.Error
+	}
+	kind, value := string(r.Kind()), device.FormatValue(r.Value)
+	if kind == "" {
+		kind = string(r.Address.Type)
+	}
+	if r.Value.Type == "" {
+		value = ""
+	}
+	quality := r.Quality
+	if quality != "UNKNOWN" {
+		quality += fmt.Sprintf(" / 0x%08X", r.StatusCode)
+	}
+	return []string{r.Address.NodeID, kind, accessNames[r.Access], value, quality, detail}
+}
+
+// pointCell renders one visible cell on demand: formatting every row of a
+// 50000-point list on each refresh stalled the UI thread.
+func (d *Desktop) pointCell(row, col int) string {
+	if row == 0 {
+		return pointHeader[col]
+	}
+	if row > len(d.visible) {
+		return ""
+	}
+	return pointRow(&d.snapshot.Results[d.visible[row-1]])[col]
+}
+
 func (d *Desktop) refreshPointRows() {
 	filter := d.resultFilter.Selected
-	d.visibleResults = nil
-	d.rows = [][]string{{"NodeID", "类型", "值", "质量 / 状态码", "执行状态 / 时间 / 错误"}}
+	rr := d.snapshot.Results
+	// Results are copy-on-write, so an unchanged slice needs no new rows.
+	key := pointsKey{len(rr), filter, nil}
+	if len(rr) > 0 {
+		key.first = &rr[0]
+	}
+	if key == d.pointsKey {
+		return
+	}
+	d.pointsKey = key
+	d.visible = d.visible[:0]
 	counts := map[string]int{}
-	for _, r := range d.snapshot.Results {
+	for i := range rr {
+		r := &rr[i]
 		counts[r.Quality]++
 		counts[r.Execution]++
-		if !matchesPoint(r, filter) {
-			continue
+		if r.Missing() {
+			counts["MISSING"]++
 		}
-		d.visibleResults = append(d.visibleResults, r)
-		detail := r.Execution
-		if !r.SourceTime.IsZero() {
-			detail += " · " + r.SourceTime.Local().Format("15:04:05.000")
+		if r.Writable() {
+			counts["WRITABLE"]++
 		}
-		if r.Error != "" {
-			detail += " · " + r.Error
+		if matchesPoint(r, filter) {
+			d.visible = append(d.visible, i)
 		}
-		kind := string(r.Value.Type)
-		value := device.FormatValue(r.Value)
-		if kind == "" {
-			kind = string(r.Address.Type)
-			value = ""
-		}
-		quality := r.Quality
-		if quality != "UNKNOWN" {
-			quality += fmt.Sprintf(" / 0x%08X", r.StatusCode)
-		}
-		d.rows = append(d.rows, []string{r.Address.NodeID, kind, value, quality, detail})
 	}
 	d.table.UnselectAll()
 	d.table.Refresh()
-	d.pointSummary.SetText(fmt.Sprintf("共 %d · GOOD %d / BAD %d / UNCERTAIN %d · 请求失败 %d / 解析或类型错误 %d / 未读 %d", len(d.snapshot.Results), counts["GOOD"], counts["BAD"], counts["UNCERTAIN"], counts["REQUEST_FAILED"], counts["PARSE_FAILED"]+counts["TYPE_MISMATCH"], counts["NOT_READ"]))
+	d.pointSummary.SetText(fmt.Sprintf("共 %d · GOOD %d / BAD %d / UNCERTAIN %d · 不存在 %d · 可写 %d · 请求失败 %d / 解析或类型错误 %d / 未读 %d", len(rr), counts["GOOD"], counts["BAD"], counts["UNCERTAIN"], counts["MISSING"], counts["WRITABLE"], counts["REQUEST_FAILED"], counts["PARSE_FAILED"]+counts["TYPE_MISMATCH"], counts["NOT_READ"]))
+	if d.jobFollow && len(rr) > 0 {
+		d.jobBar.SetValue(1 - float64(counts["NOT_READ"])/float64(len(rr)))
+	}
+}
+
+type pointsKey struct {
+	n      int
+	filter string
+	first  *device.ReadResult
+}
+
+func (d *Desktop) copyPointRows() {
+	lines := []string{strings.Join(pointHeader, "\t")}
+	for _, i := range d.visible {
+		lines = append(lines, strings.Join(pointRow(&d.snapshot.Results[i]), "\t"))
+	}
+	d.win.Clipboard().SetContent(strings.Join(lines, "\n"))
 }
 
 func (d *Desktop) exportPointsDialog() {
@@ -120,8 +181,8 @@ func (d *Desktop) exportPointsDialog() {
 	snapshot := d.snapshot
 	filter := d.resultFilter.Selected
 	count := 0
-	for _, r := range snapshot.Results {
-		if matchesPoint(r, filter) {
+	for i := range snapshot.Results {
+		if matchesPoint(&snapshot.Results[i], filter) {
 			count++
 		}
 	}
@@ -129,25 +190,10 @@ func (d *Desktop) exportPointsDialog() {
 		d.showError(errors.New("当前筛选没有可导出的点位"))
 		return
 	}
-	save := dialog.NewFileSave(func(out fyne.URIWriteCloser, err error) {
-		if err != nil {
-			d.showError(err)
-			return
-		}
-		if out == nil {
-			return
-		}
-		writeErr := exportPointsCSV(out, snapshot, filter)
-		closeErr := out.Close()
-		if err = errors.Join(writeErr, closeErr); err != nil {
-			d.showError(err)
-			return
-		}
-		dialog.ShowInformation("导出完成", fmt.Sprintf("已导出 %d 行（%s）。", count, filter), d.win)
-	}, d.win)
-	save.SetTitleText(fmt.Sprintf("导出 CSV · %s · %d 行", filter, count))
-	save.SetFileName("opcua-points-" + time.Now().Format("20060102-150405") + ".csv")
-	save.Show()
+	d.saveFile(fmt.Sprintf("导出 CSV · %s · %d 行", filter, count), "opcua-points-"+time.Now().Format("20060102-150405")+".csv", func(ctx context.Context, out io.Writer, report func(int, int)) (string, error) {
+		err := exportPointsCSV(ctx, out, snapshot, filter, func(done int) { report(done, count) })
+		return fmt.Sprintf("已导出 %d 行（%s）。", count, filter), err
+	})
 }
 
 func (d *Desktop) showPointHelp() {

@@ -15,6 +15,9 @@ import (
 	"time"
 )
 
+// packetPoints bounds the targets and results a packet log keeps per request.
+const packetPoints = 100
+
 type Options struct {
 	RecordDir string
 	Dial      func(context.Context, string, opcua.Options) (device.Driver, error)
@@ -118,17 +121,12 @@ func (c *Controller) Snapshot() Snapshot {
 	defer c.mu.Unlock()
 	c.healthLocked()
 	s := c.snap
+	// Results and Nodes are copy-on-write: writers replace the slices, never
+	// their elements, so snapshots share them. Packets are cloned on entry and
+	// never mutated, so copying the slice suffices. Deep cloning 50000 points
+	// per UI refresh held the lock long enough to stall reads.
 	s.Logs = append([]string(nil), s.Logs...)
-	s.Nodes = append([]device.Node(nil), s.Nodes...)
-	s.Packets = make([]device.Event, len(c.snap.Packets))
-	for i, e := range c.snap.Packets {
-		s.Packets[i] = e.Clone()
-	}
-	s.Results = make([]device.ReadResult, len(c.snap.Results))
-	for i, r := range c.snap.Results {
-		e := device.Event{Results: []device.EventResult{{Read: &r}}}
-		s.Results[i] = *e.Clone().Results[0].Read
-	}
+	s.Packets = append([]device.Event(nil), s.Packets...)
 	if s.WriteResult != nil {
 		r := *s.WriteResult
 		r.Segments = append([]device.WriteSegment(nil), r.Segments...)
@@ -238,6 +236,13 @@ func (c *Controller) Connect(ctx context.Context, cfg Config) error {
 	c.finishSession(old)
 	o.Observer = device.ObserverFunc(func(event device.Event) {
 		event.Family = "OPC UA"
+		// A bulk request of 5000 points would log megabytes and slow the read
+		// it records; its results stay complete in the result table.
+		if n := len(event.Targets); n > packetPoints {
+			event.Total = n
+			event.Targets = event.Targets[:packetPoints]
+			event.Results = event.Results[:min(len(event.Results), packetPoints)]
+		}
 		if c.rec != nil && s.id != 0 {
 			c.rec.Record(s.id, event)
 		}

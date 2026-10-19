@@ -43,12 +43,21 @@ type Desktop struct {
 	activity                                                                                                         *widget.Activity
 	connectBtn, disconnectBtn, demoBtn, stopDemoBtn, readBtn, pollBtn, stopPollBtn, writeBtn, browseBtn, discoverBtn *widget.Button
 	table, browseTable                                                                                               *widget.Table
-	rows, browseRows                                                                                                 [][]string
 	resultFilter                                                                                                     *widget.Select
 	singleNode, allRoot                                                                                              *widget.Entry
 	verifyBtn, fullBtn, browseFullBtn, stopReadBtn, exportBtn                                                        *widget.Button
 	pointSummary, scanStatus                                                                                         *widget.Label
-	visibleResults                                                                                                   []device.ReadResult
+	visible                                                                                                          []int
+	pointsKey                                                                                                        pointsKey
+	nodesKey                                                                                                         *device.Node
+	nodesLen                                                                                                         int
+	browseSelection                                                                                                  []device.Node
+	browseSelected                                                                                                   map[string]bool
+	selectionLabel, jobLabel                                                                                         *widget.Label
+	selectAllBtn, clearSelectBtn, readSelectedBtn, importBtn, exportAttrBtn, probeBtn                                *widget.Button
+	jobBox                                                                                                           *fyne.Container
+	jobBar                                                                                                           *widget.ProgressBar
+	jobFollow                                                                                                        bool
 	checkCancel                                                                                                      context.CancelFunc
 	tabs                                                                                                             *container.AppTabs
 }
@@ -148,6 +157,10 @@ func (d *Desktop) run(fn func(context.Context) error, success func()) {
 				d.checkCancel()
 				d.checkCancel = nil
 			}
+			if d.busy == 0 && d.jobBox != nil {
+				d.jobBox.Hide()
+				d.jobFollow = false
+			}
 			if err != nil {
 				d.showError(err)
 			} else {
@@ -174,6 +187,7 @@ func (d *Desktop) controls() {
 	}
 	set(d.connectBtn, idle)
 	set(d.discoverBtn, idle)
+	set(d.probeBtn, idle)
 	set(d.disconnectBtn, idle && connected)
 	set(d.demoBtn, idle && d.snapshot.DemoTarget == "")
 	set(d.stopDemoBtn, idle && d.snapshot.DemoTarget != "")
@@ -182,7 +196,12 @@ func (d *Desktop) controls() {
 	set(d.fullBtn, idle && connected)
 	set(d.browseFullBtn, idle && connected)
 	set(d.stopReadBtn, d.checkCancel != nil)
-	set(d.exportBtn, len(d.snapshot.Results) > 0)
+	set(d.exportBtn, idle && len(d.snapshot.Results) > 0)
+	set(d.exportAttrBtn, idle && len(d.snapshot.Results) > 0)
+	set(d.importBtn, idle && connected)
+	set(d.selectAllBtn, len(d.snapshot.Nodes) > 0)
+	set(d.clearSelectBtn, len(d.browseSelection) > 0)
+	set(d.readSelectedBtn, idle && connected && len(d.browseSelection) > 0)
 	set(d.pollBtn, idle && connected && !d.snapshot.Polling)
 	set(d.stopPollBtn, d.snapshot.Polling)
 	set(d.writeBtn, idle && connected && d.allowWrite.Checked)
@@ -230,11 +249,15 @@ func (d *Desktop) refresh(s service.Snapshot) {
 	}
 	d.refreshPointRows()
 	d.scanStatus.SetText(s.ScanStatus)
-	d.browseRows = [][]string{{"NodeID", "显示名称", "节点类型"}}
-	for _, n := range s.Nodes {
-		d.browseRows = append(d.browseRows, []string{n.NodeID, n.DisplayName, n.Class})
+	// Nodes are copy-on-write: refresh the browse table only for a new list.
+	var first *device.Node
+	if len(s.Nodes) > 0 {
+		first = &s.Nodes[0]
 	}
-	d.browseTable.Refresh()
+	if first != d.nodesKey || len(s.Nodes) != d.nodesLen {
+		d.nodesKey, d.nodesLen = first, len(s.Nodes)
+		d.browseTable.Refresh()
+	}
 	if s.WriteResult != nil {
 		d.writeStatus.SetText("写入: " + s.WriteResult.State + " · 读回" + s.Readback)
 	} else {
@@ -243,11 +266,15 @@ func (d *Desktop) refresh(s service.Snapshot) {
 	d.logs.SetText(strings.Join(s.Logs, "\n"))
 	var lines []string
 	for _, e := range s.Packets {
-		targets := make([]string, len(e.Targets))
-		for i, a := range e.Targets {
-			targets[i] = a.NodeID
+		var targets []string
+		for _, a := range e.Targets[:min(len(e.Targets), 3)] {
+			targets = append(targets, a.NodeID)
 		}
-		lines = append(lines, fmt.Sprintf("%s  #%d  %s  %s  %s  %s", e.Time.Format("15:04:05.000"), e.RequestID, e.Dir, e.Operation, e.Status, strings.Join(targets, ", ")))
+		target := strings.Join(targets, ", ")
+		if n := max(len(e.Targets), e.Total); n > 3 {
+			target += fmt.Sprintf(" 等 %d 个", n)
+		}
+		lines = append(lines, fmt.Sprintf("%s  #%d  %s  %s  %s  %s", e.Time.Format("15:04:05.000"), e.RequestID, e.Dir, e.Operation, e.Status, target))
 	}
 	d.events.SetText(strings.Join(lines, "\n"))
 	d.controls()

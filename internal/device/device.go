@@ -2,6 +2,7 @@ package device
 
 import (
 	"context"
+	"github.com/gopcua/opcua/ua"
 	"time"
 )
 
@@ -32,7 +33,38 @@ type ReadResult struct {
 	DisplayName string    `json:"display_name,omitempty"`
 	Scope       string    `json:"scope,omitempty"`
 	Complete    bool      `json:"scope_complete"`
+	NodeAttributes
 }
+
+// NodeAttributes describe a variable beyond its value: the declared type and
+// this session's access, READ, READ_WRITE, WRITE or NONE; "" when unknown.
+type NodeAttributes struct {
+	DataType DataType `json:"data_type,omitempty"`
+	Access   string   `json:"access,omitempty"`
+}
+
+// Writable reports whether the session may write the variable, a control point.
+func (a NodeAttributes) Writable() bool { return a.Access == "READ_WRITE" || a.Access == "WRITE" }
+
+// Missing reports whether the server says the node does not exist.
+func (r ReadResult) Missing() bool {
+	return r.StatusCode == uint32(ua.StatusBadNodeIDUnknown) || r.StatusCode == uint32(ua.StatusBadNodeIDInvalid)
+}
+
+// Kind is the point's OPC UA type: the value read, else the declared type,
+// else the requested one; "" when none is known.
+func (r ReadResult) Kind() DataType {
+	switch {
+	case r.Value.Type != "" && r.Value.Type != "Null":
+		return r.Value.Type
+	case r.DataType != "":
+		return r.DataType
+	case r.Address.Type != "Auto":
+		return r.Address.Type
+	}
+	return ""
+}
+
 type WriteSegment struct {
 	Address Address `json:"address"`
 	State   string  `json:"state"`

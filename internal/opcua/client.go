@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -24,6 +25,10 @@ type Options struct {
 	Policy, Mode, Username, Password, Certificate, PrivateKey, ServerCertificate string
 	Observer                                                                     device.Observer
 }
+
+// MaxNodesPerRequest bounds one request; servers that accept less reject the
+// request with BadTooManyOperations and the caller retries smaller batches.
+const MaxNodesPerRequest = 10000
 
 func DefaultOptions() Options { return Options{Timeout: 5 * time.Second, Policy: "None", Mode: "None"} }
 func ValidateEndpoint(target string) error {
@@ -216,16 +221,33 @@ func (c *Client) event(seq uint64, dir device.Direction, op string, targets []de
 	c.options.Observer.OnEvent(device.Event{Time: time.Now(), Protocol: device.ProtocolOPCUA, ConnectionID: c.connection, RequestID: seq, Dir: dir, Operation: op, Targets: targets, Results: results, Status: status, RTT: time.Since(start), Error: msg})
 }
 func (c *Client) Read(ctx context.Context, aa []device.Address) ([]device.ReadResult, error) {
-	if len(aa) < 1 || len(aa) > 1024 {
-		return nil, fmt.Errorf("须读取 1..1024 个节点")
+	return c.read(ctx, aa, false)
+}
+
+// ReadWithAttributes also reads each variable's declared data type and this
+// session's access in the same request, sparing large lists a second pass.
+func (c *Client) ReadWithAttributes(ctx context.Context, aa []device.Address) ([]device.ReadResult, error) {
+	return c.read(ctx, aa, true)
+}
+
+func (c *Client) read(ctx context.Context, aa []device.Address, describe bool) ([]device.ReadResult, error) {
+	if len(aa) < 1 || len(aa) > MaxNodesPerRequest {
+		return nil, fmt.Errorf("须读取 1..%d 个节点", MaxNodesPerRequest)
 	}
-	req := &ua.ReadRequest{TimestampsToReturn: ua.TimestampsToReturnBoth}
+	per := 1
+	if describe {
+		per = 3
+	}
+	req := &ua.ReadRequest{TimestampsToReturn: ua.TimestampsToReturnBoth, NodesToRead: make([]*ua.ReadValueID, 0, per*len(aa))}
 	for _, a := range aa {
 		if err := a.Validate(); err != nil {
 			return nil, err
 		}
 		n, _ := ua.ParseNodeID(a.NodeID)
 		req.NodesToRead = append(req.NodesToRead, &ua.ReadValueID{NodeID: n, AttributeID: ua.AttributeIDValue})
+		if describe {
+			req.NodesToRead = append(req.NodesToRead, &ua.ReadValueID{NodeID: n, AttributeID: ua.AttributeIDDataType}, &ua.ReadValueID{NodeID: n, AttributeID: ua.AttributeIDUserAccessLevel})
+		}
 	}
 	seq := c.seq.Add(1)
 	start := time.Now()
@@ -237,13 +259,17 @@ func (c *Client) Read(ctx context.Context, aa []device.Address) ([]device.ReadRe
 		c.event(seq, device.DirRX, "READ", aa, nil, start, err)
 		return nil, err
 	}
-	if len(res.Results) != len(aa) {
+	if len(res.Results) != per*len(aa) {
 		return nil, fmt.Errorf("服务器读取结果数量不一致")
 	}
 	rr := make([]device.ReadResult, len(aa))
 	events := make([]device.EventResult, len(aa))
-	for i, r := range res.Results {
+	for i := range aa {
+		r := res.Results[per*i]
 		v := device.ReadResult{Address: aa[i], Time: time.Now(), Quality: "GOOD", Execution: "READ"}
+		if describe {
+			v.NodeAttributes = attributes(res.Results[per*i+1], res.Results[per*i+2])
+		}
 		if r == nil {
 			v.Quality = "UNKNOWN"
 			v.Execution = "REQUEST_FAILED"
@@ -347,69 +373,178 @@ func writeState(code ua.StatusCode) string {
 	}
 	return "REJECTED"
 }
-func (c *Client) Browse(ctx context.Context, node string) (out []device.Node, err error) {
-	a, err := device.ParseAddress(node, "Auto", 1)
+func (c *Client) Browse(ctx context.Context, node string) ([]device.Node, error) {
+	out, err := c.BrowseNodes(ctx, []string{node})
 	if err != nil {
 		return nil, err
 	}
-	n, _ := ua.ParseNodeID(a.NodeID)
-	ctx, cancel := context.WithTimeout(ctx, c.options.Timeout)
-	defer cancel()
+	return out[0], nil
+}
+
+// BrowseNodes lists the hierarchical children of several nodes in one request,
+// following continuation points until every list is complete.
+func (c *Client) BrowseNodes(ctx context.Context, nodes []string) (out [][]device.Node, err error) {
+	if len(nodes) < 1 || len(nodes) > MaxNodesPerRequest {
+		return nil, fmt.Errorf("须浏览 1..%d 个节点", MaxNodesPerRequest)
+	}
+	aa := make([]device.Address, len(nodes))
+	// The SDK closes the session on a response above the negotiated message
+	// size (2 MB on many servers), so each page holds at most 5000 references,
+	// about 0.5 MB; continuation points fetch the rest of large folders.
+	req := &ua.BrowseRequest{RequestedMaxReferencesPerNode: uint32(min(1000, max(1, 5000/len(nodes))))}
+	for i, node := range nodes {
+		if aa[i], err = device.ParseAddress(node, "Auto", 1); err != nil {
+			return nil, err
+		}
+		n, _ := ua.ParseNodeID(aa[i].NodeID)
+		req.NodesToBrowse = append(req.NodesToBrowse, &ua.BrowseDescription{NodeID: n, BrowseDirection: ua.BrowseDirectionForward, ReferenceTypeID: ua.NewNumericNodeID(0, id.HierarchicalReferences), IncludeSubtypes: true, ResultMask: uint32(ua.BrowseResultMaskAll)})
+	}
 	seq := c.seq.Add(1)
 	start := time.Now()
-	c.event(seq, device.DirTX, "BROWSE", []device.Address{a}, nil, start, nil)
-	defer func() { c.event(seq, device.DirRX, "BROWSE", []device.Address{a}, nil, start, err) }()
-	res, err := c.client.Browse(ctx, &ua.BrowseRequest{RequestedMaxReferencesPerNode: 100, NodesToBrowse: []*ua.BrowseDescription{{NodeID: n, BrowseDirection: ua.BrowseDirectionForward, ReferenceTypeID: ua.NewNumericNodeID(0, id.HierarchicalReferences), IncludeSubtypes: true, ResultMask: uint32(ua.BrowseResultMaskAll)}}})
+	c.event(seq, device.DirTX, "BROWSE", aa, nil, start, nil)
+	defer func() { c.event(seq, device.DirRX, "BROWSE", aa, nil, start, err) }()
+	// Each page has its own timeout: a folder of 50000 variables spans many pages.
+	reqCtx, cancel := context.WithTimeout(ctx, c.options.Timeout)
+	res, err := c.client.Browse(reqCtx, req)
+	cancel()
 	if err != nil {
 		return nil, err
 	}
-	if len(res.Results) != 1 {
+	pages := res.Results
+	if len(pages) != len(nodes) {
 		return nil, fmt.Errorf("服务器浏览结果数量不一致")
 	}
-	page := res.Results[0]
-	var continuation []byte
+	out = make([][]device.Node, len(nodes))
+	owner := make([]int, len(nodes))
+	for i := range owner {
+		owner[i] = i
+	}
+	var pending [][]byte
 	defer func() {
-		if len(continuation) > 0 {
+		if len(pending) > 0 {
 			releaseCtx, stop := context.WithTimeout(context.Background(), time.Second)
 			defer stop()
-			c.client.BrowseNext(releaseCtx, &ua.BrowseNextRequest{ReleaseContinuationPoints: true, ContinuationPoints: [][]byte{continuation}})
+			c.client.BrowseNext(releaseCtx, &ua.BrowseNextRequest{ReleaseContinuationPoints: true, ContinuationPoints: pending})
 		}
 	}()
-	for pages := 0; ; pages++ {
-		if page == nil {
-			return nil, fmt.Errorf("服务器返回空浏览页")
-		}
-		continuation = page.ContinuationPoint
-		if uint32(page.StatusCode)&0xC0000000 != 0 {
-			return nil, page.StatusCode
-		}
-		for _, ref := range page.References {
-			if ref == nil || ref.NodeID == nil || ref.NodeID.NodeID == nil {
-				continue
+	for round := 0; ; round++ {
+		var nextOwner []int
+		for i, page := range pages {
+			if page != nil && len(page.ContinuationPoint) > 0 {
+				pending = append(pending, page.ContinuationPoint)
+				nextOwner = append(nextOwner, owner[i])
 			}
-			x := device.Node{NodeID: device.FormatNodeID(ref.NodeID.NodeID), Class: ref.NodeClass.String()}
-			if ref.BrowseName != nil {
-				x.BrowseName = ref.BrowseName.Name
+		}
+		for i, page := range pages {
+			if page == nil {
+				return nil, fmt.Errorf("服务器返回空浏览页")
 			}
-			if ref.DisplayName != nil {
-				x.DisplayName = ref.DisplayName.Text
+			if uint32(page.StatusCode)&0xC0000000 != 0 {
+				return nil, page.StatusCode
 			}
-			out = append(out, x)
+			list := out[owner[i]]
+			for _, ref := range page.References {
+				if ref == nil || ref.NodeID == nil || ref.NodeID.NodeID == nil {
+					continue
+				}
+				x := device.Node{NodeID: device.FormatNodeID(ref.NodeID.NodeID), Class: ref.NodeClass.String()}
+				if ref.BrowseName != nil {
+					x.BrowseName = ref.BrowseName.Name
+				}
+				if ref.DisplayName != nil {
+					x.DisplayName = ref.DisplayName.Text
+				}
+				list = append(list, x)
+			}
+			if len(list) > 100000 {
+				return nil, fmt.Errorf("单个节点的子节点超过 100000 个，请选择较小的父节点")
+			}
+			out[owner[i]] = list
 		}
-		if len(continuation) == 0 {
-			break
+		if len(pending) == 0 {
+			return out, nil
 		}
-		if pages >= 999 || len(out) > 10000 {
-			return nil, fmt.Errorf("浏览节点超过首版上限，请选择较小的父节点")
+		if round >= 9999 {
+			return nil, fmt.Errorf("浏览分页过多，请选择较小的父节点")
 		}
-		next, e := c.client.BrowseNext(ctx, &ua.BrowseNextRequest{ContinuationPoints: [][]byte{continuation}})
+		pageCtx, stop := context.WithTimeout(ctx, c.options.Timeout)
+		next, e := c.client.BrowseNext(pageCtx, &ua.BrowseNextRequest{ContinuationPoints: pending})
+		stop()
 		if e != nil {
 			return nil, e
 		}
-		if len(next.Results) != 1 {
+		if len(next.Results) != len(pending) {
 			return nil, fmt.Errorf("服务器浏览分页结果数量不一致")
 		}
-		page = next.Results[0]
+		pages, owner, pending = next.Results, nextOwner, nil
 	}
-	return out, nil
+}
+
+// builtinTypes maps namespace-zero data types to the types Studio reads;
+// IntegerId, Counter, Duration and UtcTime are encoded as their base types.
+var builtinTypes = map[uint32]device.DataType{id.Boolean: "Boolean", id.SByte: "SByte", id.Byte: "Byte", id.Int16: "Int16", id.UInt16: "UInt16", id.Int32: "Int32", id.UInt32: "UInt32", id.Int64: "Int64", id.UInt64: "UInt64", id.Float: "Float", id.Double: "Double", id.String: "String", id.DateTime: "DateTime", id.ByteString: "ByteString", id.IntegerID: "UInt32", id.Counter: "UInt32", id.Duration: "Double", id.UtcTime: "DateTime"}
+
+// attributes reads a variable's DataType and UserAccessLevel results. The
+// type is "" for structures, enumerations and other types without one
+// built-in encoding; the access is "" when the server does not report it.
+func attributes(dataType, access *ua.DataValue) (out device.NodeAttributes) {
+	value := func(r *ua.DataValue) any {
+		if r == nil || r.Value == nil || uint32(r.Status)&0x80000000 != 0 {
+			return nil
+		}
+		return r.Value.Value()
+	}
+	var n *ua.NodeID
+	switch v := value(dataType).(type) {
+	case *ua.NodeID:
+		n = v
+	case *ua.ExpandedNodeID:
+		n = v.NodeID
+	}
+	if n != nil && n.Namespace() == 0 && n.Type() != ua.NodeIDTypeString && n.Type() != ua.NodeIDTypeGUID && n.Type() != ua.NodeIDTypeByteString {
+		out.DataType = builtinTypes[n.IntID()]
+	}
+	if level, ok := value(access).(uint8); ok {
+		read, write := level&uint8(ua.AccessLevelTypeCurrentRead) != 0, level&uint8(ua.AccessLevelTypeCurrentWrite) != 0
+		switch {
+		case read && write:
+			out.Access = "READ_WRITE"
+		case read:
+			out.Access = "READ"
+		case write:
+			out.Access = "WRITE"
+		default:
+			out.Access = "NONE"
+		}
+	}
+	return out
+}
+
+// ProbeSessions opens sessions one after another and keeps them open until the
+// server refuses one or limit are open, then closes them all. It reports how
+// many sessions the server held at once and the refusal, if any.
+func ProbeSessions(ctx context.Context, target string, o Options, limit int, progress func(open int)) (int, error) {
+	o.Observer = nil
+	var open []*Client
+	defer func() {
+		var wg sync.WaitGroup
+		for _, c := range open {
+			wg.Go(func() { c.Close() })
+		}
+		wg.Wait()
+	}()
+	for len(open) < limit {
+		if err := ctx.Err(); err != nil {
+			return len(open), err
+		}
+		c, err := Dial(ctx, target, o)
+		if err != nil {
+			return len(open), err
+		}
+		open = append(open, c)
+		if progress != nil {
+			progress(len(open))
+		}
+	}
+	return len(open), nil
 }

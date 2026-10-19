@@ -22,7 +22,12 @@ type Server struct {
 	err      error
 }
 
-func Start(ctx context.Context, endpoint string) (*Server, error) {
+func Start(ctx context.Context, endpoint string) (*Server, error) { return StartLoad(ctx, endpoint, 0) }
+
+// StartLoad also serves tags Double variables for load tests in namespace 3,
+// 100 per folder below Objects/Load: every tenth is writable and every
+// fiftieth reports BadNoCommunication like an offline device.
+func StartLoad(ctx context.Context, endpoint string, tags int) (*Server, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Scheme != "opc.tcp" || u.Hostname() == "" {
 		return nil, fmt.Errorf("演示 Endpoint 须为 opc.tcp://127.0.0.1:端口")
@@ -61,6 +66,11 @@ func Start(ctx context.Context, endpoint string) (*Server, error) {
 			n.SetAttribute(ua.AttributeIDUserAccessLevel, server.DataValueFromValue(uint8(ua.AccessLevelTypeCurrentRead)))
 		}
 		ns.Objects().AddRef(n, id.HasComponent, true)
+	}
+	if tags > 0 {
+		load := newLoadSpace(tags)
+		srv.AddNamespace(load)
+		root.Objects().AddRef(load.folderNode(), id.Organizes, true)
 	}
 	sctx, cancel := context.WithCancel(ctx)
 	if err = srv.Start(sctx); err != nil {

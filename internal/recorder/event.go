@@ -12,10 +12,11 @@ type packetMetadata struct {
 	Targets []device.Address     `json:"targets,omitempty"`
 	Results []device.EventResult `json:"results,omitempty"`
 	Legacy  *device.LegacyFields `json:"legacy,omitempty"`
+	Total   int                  `json:"total,omitempty"`
 }
 
 func storePacketMetadata(e device.Event) (string, error) {
-	b, err := json.Marshal(packetMetadata{1, e.Family, e.Targets, e.Results, e.Legacy})
+	b, err := json.Marshal(packetMetadata{1, e.Family, e.Targets, e.Results, e.Legacy, e.Total})
 	return string(b), err
 }
 func restorePacketMetadata(e *device.Event, text string, legacy device.LegacyFields) error {
@@ -32,6 +33,6 @@ func restorePacketMetadata(e *device.Event, text string, legacy device.LegacyFie
 	if m.Version != 1 {
 		return fmt.Errorf("unsupported packet metadata version %d", m.Version)
 	}
-	e.Family, e.Targets, e.Results, e.Legacy = m.Family, m.Targets, m.Results, m.Legacy
+	e.Family, e.Targets, e.Results, e.Legacy, e.Total = m.Family, m.Targets, m.Results, m.Legacy, m.Total
 	return nil
 }

@@ -49,6 +49,8 @@ type Event struct {
 	Raw          []byte        `json:"raw,omitempty"`
 	Error        string        `json:"error,omitempty"`
 	Legacy       *LegacyFields `json:"legacy,omitempty"`
+	// Total is the request's target count when Targets keeps only the first.
+	Total int `json:"total,omitempty"`
 }
 type Observer interface{ OnEvent(Event) }
 type ObserverFunc func(Event)

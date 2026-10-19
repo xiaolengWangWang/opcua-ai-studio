@@ -1,4 +1,4 @@
-param([string]$Version='0.2.0',[string]$CompilerRoot='D:\tools\winlibs-gcc16\mingw64')
+param([string]$Version='0.3.0',[string]$CompilerRoot='D:\tools\winlibs-gcc16\mingw64')
 $ErrorActionPreference='Stop'
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must be a numeric major.minor.patch' }
 $repoRoot=Split-Path -Parent $PSScriptRoot
@@ -20,6 +20,8 @@ try {
  New-Item -ItemType Directory -Force -Path $stage | Out-Null
  $env:PATH=(Split-Path $gcc)+';'+$env:PATH; $env:CC=$gcc; $env:CGO_ENABLED='1';$env:GOOS='windows';$env:GOARCH='amd64'
  $machine=(& $gcc -dumpmachine).Trim();if($machine -ne 'x86_64-w64-mingw32'){throw "Compiler target is $machine"}
+ # go:embed ships files as go reads them; encrypted help would show as ciphertext.
+ Invoke-Native {go test -count=1 ./assets/help}
  # Patch resources after linking to avoid colliding with MinGW/Fyne manifests.
  if(Test-Path -LiteralPath $syso){Remove-Item -LiteralPath $syso}
  $exe=Join-Path $stage 'OPCUAAIStudio.exe'

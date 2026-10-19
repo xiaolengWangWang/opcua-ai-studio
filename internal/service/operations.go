@@ -35,7 +35,7 @@ func (c *Controller) readMode(ctx context.Context, points []Point, generation ui
 	if e != nil {
 		return e
 	}
-	rr, e := readBatches(ctx, s.d, aa, nil)
+	rr, e := readBatches(ctx, s.d, aa, false, nil)
 	taskID := time.Now().UTC().Format("20060102T150405.000000000Z")
 	scope := "节点清单"
 	if merge {
@@ -46,31 +46,19 @@ func (c *Controller) readMode(ctx context.Context, points []Point, generation ui
 	}
 	c.mu.Lock()
 	if c.s == s && !c.closed {
+		names := make(map[string]string, len(c.snap.Nodes))
+		for _, n := range c.snap.Nodes {
+			if _, ok := names[n.NodeID]; !ok {
+				names[n.NodeID] = n.DisplayName
+			}
+		}
 		for i := range rr {
-			for _, n := range c.snap.Nodes {
-				if n.NodeID == rr[i].Address.NodeID {
-					rr[i].DisplayName = n.DisplayName
-					break
-				}
+			if name, ok := names[rr[i].Address.NodeID]; ok {
+				rr[i].DisplayName = name
 			}
 		}
 		if merge {
-			for _, r := range rr {
-				found := false
-				for i, old := range c.snap.Results {
-					if old.Address.NodeID == r.Address.NodeID {
-						if r.DisplayName == "" {
-							r.DisplayName = old.DisplayName
-						}
-						c.snap.Results[i] = r
-						found = true
-						break
-					}
-				}
-				if !found {
-					c.snap.Results = append(c.snap.Results, r)
-				}
-			}
+			c.mergeResultsLocked(rr)
 		} else {
 			c.snap.Results = rr
 		}
@@ -93,6 +81,33 @@ func (c *Controller) readMode(ctx context.Context, points []Point, generation ui
 	}
 	return e
 }
+
+// mergeResultsLocked replaces the listed points' results in a copy, keeping
+// the rest of the list, earlier names and attributes; results are copy-on-write.
+func (c *Controller) mergeResultsLocked(rr []device.ReadResult) {
+	results := append([]device.ReadResult(nil), c.snap.Results...)
+	at := make(map[string]int, len(results))
+	for i := len(results) - 1; i >= 0; i-- {
+		at[results[i].Address.NodeID] = i
+	}
+	for _, r := range rr {
+		i, ok := at[r.Address.NodeID]
+		if !ok {
+			at[r.Address.NodeID] = len(results)
+			results = append(results, r)
+			continue
+		}
+		if r.DisplayName == "" {
+			r.DisplayName = results[i].DisplayName
+		}
+		if r.NodeAttributes == (device.NodeAttributes{}) {
+			r.NodeAttributes = results[i].NodeAttributes
+		}
+		results[i] = r
+	}
+	c.snap.Results = results
+}
+
 func (c *Controller) Write(ctx context.Context, req WriteRequest, approved bool) error {
 	if !approved {
 		return errors.New("写入默认禁用，须明确允许并确认")
@@ -132,7 +147,7 @@ func (c *Controller) Write(ctx context.Context, req WriteRequest, approved bool)
 		c.snap.WriteResult = &result
 		c.snap.Readback = readback
 		if len(rr) > 0 {
-			c.snap.Results = rr
+			c.mergeResultsLocked(rr)
 		}
 		c.snap.LastError = ""
 		if e != nil {
