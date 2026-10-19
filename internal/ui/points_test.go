@@ -70,11 +70,11 @@ func TestQualityFilterSelectsTheVisibleBadPoint(t *testing.T) {
 		{Address: device.Address{NodeID: "ns=2;s=Bad", Type: "Auto", Count: 1}, Quality: "BAD", Error: "unknown node"},
 	}})
 	d.resultFilter.SetSelected("BAD")
-	if len(d.visible) != 1 || d.pointCell(1, 0) != "ns=2;s=Bad" {
+	if len(d.visible) != 1 || d.pointCell(0, 0) != "ns=2;s=Bad" {
 		t.Fatalf("BAD filter includes another quality: %+v", d.visible)
 	}
 	d.addresses.SetText("ns=2;s=Good\nns=2;s=Bad")
-	d.table.OnSelected(widget.TableCellID{Row: 1, Col: 0})
+	d.table.OnSelected(widget.TableCellID{Row: 0, Col: 0})
 	if d.singleNode.Text != "ns=2;s=Bad" {
 		t.Fatalf("selected hidden good row instead of visible bad row: %s", d.singleNode.Text)
 	}
@@ -91,8 +91,8 @@ func TestBrowseAddsWithoutReplacingOrDuplicatingTheList(t *testing.T) {
 	defer d.Shutdown()
 	d.addresses.SetText("ns=2;s=First")
 	d.refresh(service.Snapshot{Revision: 99, Nodes: []device.Node{{NodeID: "ns=2;s=Second", Class: "Variable"}}})
-	d.browseTable.OnSelected(widget.TableCellID{Row: 1, Col: 1})
-	d.browseTable.OnSelected(widget.TableCellID{Row: 1, Col: 1})
+	d.browseTable.OnSelected(widget.TableCellID{Row: 0, Col: 1})
+	d.browseTable.OnSelected(widget.TableCellID{Row: 0, Col: 1})
 	if d.addresses.Text != "ns=2;s=First\nns=2;s=Second" {
 		t.Fatalf("list replaced or duplicate added: %q", d.addresses.Text)
 	}
@@ -166,11 +166,11 @@ func TestBrowseSelectionTogglesAndSelectsAll(t *testing.T) {
 	defer d.Shutdown()
 	d.refresh(service.Snapshot{Revision: 99, State: "connected", Nodes: []device.Node{{NodeID: "ns=2;s=A", Class: "Object"}, {NodeID: "ns=2;s=B", Class: "Variable"}}})
 	list := d.addresses.Text
-	d.browseTable.OnSelected(widget.TableCellID{Row: 2, Col: 0})
-	if len(d.browseSelection) != 1 || d.browseCell(2, 0) != "■" || d.addresses.Text != list {
+	d.browseTable.OnSelected(widget.TableCellID{Row: 1, Col: 0})
+	if len(d.browseSelection) != 1 || d.browseCell(1, 0) != "■" || d.browseStyle(1, 0) != widget.HighImportance || d.addresses.Text != list {
 		t.Fatalf("checkbox column did not only select: %+v %q", d.browseSelection, d.addresses.Text)
 	}
-	d.browseTable.OnSelected(widget.TableCellID{Row: 2, Col: 0})
+	d.browseTable.OnSelected(widget.TableCellID{Row: 1, Col: 0})
 	if len(d.browseSelection) != 0 {
 		t.Fatal("second click did not clear the selection")
 	}
@@ -193,16 +193,16 @@ func TestFiltersFindMissingAndControlPoints(t *testing.T) {
 	d.refresh(service.Snapshot{Revision: 99, State: "connected", Results: rr})
 	for filter, node := range map[string]string{"不存在": "ns=2;s=Missing", "可写（控制点位）": "ns=2;s=Set"} {
 		d.resultFilter.SetSelected(filter)
-		if len(d.visible) != 1 || d.pointCell(1, 0) != node {
+		if len(d.visible) != 1 || d.pointCell(0, 0) != node {
 			t.Fatalf("%s: %+v", filter, d.visible)
 		}
 	}
 	d.resultFilter.SetSelected("不存在")
-	d.table.OnSelected(widget.TableCellID{Row: 1, Col: 0})
+	d.table.OnSelected(widget.TableCellID{Row: 0, Col: 0})
 	if d.kind.Selected != "Float" {
 		t.Fatalf("imported type not kept for writing: %s", d.kind.Selected)
 	}
-	if d.pointCell(1, 1) != "Float" || pointRow(&rr[1])[2] != "读写" {
+	if d.pointCell(0, 1) != "Float" || d.pointStyle(0, 4) != widget.DangerImportance || pointRow(&rr[1])[2] != "读写" {
 		t.Fatal("type or access column missing")
 	}
 }
@@ -226,7 +226,7 @@ func TestRefreshOf50000PointsIsCheap(t *testing.T) {
 	if elapsed := time.Since(start) / 10; elapsed > 50*time.Millisecond {
 		t.Fatalf("refresh of 50000 points takes %v", elapsed)
 	}
-	if len(d.visible) != 50000 || d.pointCell(50000, 0) != "ns=2;s=Tag49999" {
+	if len(d.visible) != 50000 || d.pointCell(49999, 0) != "ns=2;s=Tag49999" {
 		t.Fatal("rows lost")
 	}
 }

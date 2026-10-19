@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
@@ -46,7 +47,8 @@ type Desktop struct {
 	resultFilter                                                                                                     *widget.Select
 	singleNode, allRoot                                                                                              *widget.Entry
 	verifyBtn, fullBtn, browseFullBtn, stopReadBtn, exportBtn                                                        *widget.Button
-	pointSummary, scanStatus                                                                                         *widget.Label
+	scanStatus                                                                                                       *widget.Label
+	pointSummary                                                                                                     *widget.RichText
 	visible                                                                                                          []int
 	pointsKey                                                                                                        pointsKey
 	nodesKey                                                                                                         *device.Node
@@ -60,14 +62,16 @@ type Desktop struct {
 	jobFollow                                                                                                        bool
 	checkCancel                                                                                                      context.CancelFunc
 	tabs                                                                                                             *container.AppTabs
+	version                                                                                                          string
+	updateBtn, checkUpdateBtn                                                                                        *widget.Button
 }
 
 func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &Desktop{app: a, controller: c, ctx: ctx, cancel: cancel}
+	d := &Desktop{app: a, controller: c, ctx: ctx, cancel: cancel, version: version}
 	d.win = a.NewWindow("OPC UA AI Studio " + version)
 	d.win.SetIcon(icon.Application())
-	d.status = widget.NewLabel("未连接")
+	d.status = widget.NewLabelWithStyle("未连接", fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
 	d.lastError = widget.NewLabel("")
 	d.lastError.Importance = widget.DangerImportance
 	d.lastError.Wrapping = fyne.TextWrapWord
@@ -75,8 +79,14 @@ func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 	d.activity = widget.NewActivity()
 	d.activity.Hide()
 	d.recordStatus = widget.NewLabel("")
-	d.recordStatus.Wrapping = fyne.TextWrapBreak
-	header := container.NewBorder(nil, nil, widget.NewLabelWithStyle("OPC UA AI Studio  "+version, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.activity, d.status))
+	d.recordStatus.Truncation = fyne.TextTruncateEllipsis
+	d.recordStatus.Importance = widget.LowImportance
+	logo := canvas.NewImageFromResource(icon.Application())
+	logo.FillMode = canvas.ImageFillContain
+	logo.SetMinSize(fyne.NewSquareSize(28))
+	title := widget.NewRichText(&widget.TextSegment{Text: "OPC UA AI Studio", Style: widget.RichTextStyle{Inline: true, SizeName: theme.SizeNameSubHeadingText, TextStyle: fyne.TextStyle{Bold: true}}},
+		&widget.TextSegment{Text: "  v" + version, Style: widget.RichTextStyle{Inline: true, ColorName: theme.ColorNamePlaceHolder}})
+	header := container.NewBorder(nil, nil, container.NewHBox(logo, title), container.NewHBox(d.activity, d.status))
 	d.tabs = container.NewAppTabs(container.NewTabItemWithIcon("点位与读写", theme.ListIcon(), d.pointsPanel()), container.NewTabItemWithIcon("节点浏览", theme.SearchIcon(), d.browsePanel()), container.NewTabItemWithIcon("通讯与日志", theme.DocumentIcon(), d.diagnosticsPanel()), container.NewTabItemWithIcon("AI 诊断", theme.InfoIcon(), d.aiPanel()))
 	open := widget.NewButtonWithIcon("打开记录目录", theme.FolderOpenIcon(), func() {
 		if err := platform.OpenFile(c.Snapshot().RecordDir); err != nil {
@@ -84,17 +94,25 @@ func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 		}
 	})
 	help := widget.NewButtonWithIcon("读取帮助", theme.HelpIcon(), d.showPointHelp)
-	footer := container.NewBorder(widget.NewSeparator(), nil, nil, container.NewHBox(help, open), d.recordStatus)
-	d.win.SetContent(container.NewPadded(container.NewBorder(container.NewVBox(header, d.connectionPanel(), d.lastError), footer, nil, nil, d.tabs)))
+	d.checkUpdateBtn = widget.NewButtonWithIcon("检查更新", theme.ViewRefreshIcon(), func() { d.checkUpdates(false) })
+	d.updateBtn = widget.NewButtonWithIcon("", theme.DownloadIcon(), nil)
+	d.updateBtn.Importance = widget.HighImportance
+	d.updateBtn.Hide()
+	footer := container.NewBorder(widget.NewSeparator(), nil, nil, container.NewHBox(d.updateBtn, d.checkUpdateBtn, help, open), d.recordStatus)
+	connection := widget.NewCard("", "", d.connectionPanel())
+	d.win.SetContent(container.NewPadded(container.NewBorder(container.NewVBox(header, connection, d.lastError), footer, nil, nil, d.tabs)))
 	w, h := platform.WorkArea()
-	d.win.Resize(platform.FitSize(fyne.NewSize(1180, 820), w, h, d.win.Canvas().Scale()))
+	d.win.Resize(platform.FitSize(fyne.NewSize(1280, 860), w, h, d.win.Canvas().Scale()))
 	d.loadInputs()
 	d.refresh(c.Snapshot())
-	d.win.SetCloseIntercept(func() {
-		d.cancel()
-		go func() { d.Shutdown(); fyne.Do(func() { d.win.SetCloseIntercept(nil); d.win.Close(); a.Quit() }) }()
-	})
+	d.win.SetCloseIntercept(d.quit)
 	return d
+}
+
+// quit records and releases everything before the app exits.
+func (d *Desktop) quit() {
+	d.cancel()
+	go func() { d.Shutdown(); fyne.Do(func() { d.win.SetCloseIntercept(nil); d.win.Close(); d.app.Quit() }) }()
 }
 func (d *Desktop) Window() fyne.Window { return d.win }
 func (d *Desktop) Show() {

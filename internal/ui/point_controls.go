@@ -12,6 +12,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"opcua-ai-studio/assets/help"
 	"opcua-ai-studio/internal/device"
@@ -117,13 +118,39 @@ func pointRow(r *device.ReadResult) []string {
 // pointCell renders one visible cell on demand: formatting every row of a
 // 50000-point list on each refresh stalled the UI thread.
 func (d *Desktop) pointCell(row, col int) string {
-	if row == 0 {
-		return pointHeader[col]
-	}
-	if row > len(d.visible) {
+	if row >= len(d.visible) {
 		return ""
 	}
-	return pointRow(&d.snapshot.Results[d.visible[row-1]])[col]
+	return pointRow(&d.snapshot.Results[d.visible[row]])[col]
+}
+
+// pointStyle colors quality by severity, marks control points and flags
+// client-side failures, so problems stand out in long lists.
+func (d *Desktop) pointStyle(row, col int) widget.Importance {
+	if row >= len(d.visible) {
+		return widget.MediumImportance
+	}
+	r := &d.snapshot.Results[d.visible[row]]
+	switch {
+	case col == 2 && r.Writable():
+		return widget.HighImportance
+	case col == 4 && r.Quality == "GOOD":
+		return widget.SuccessImportance
+	case col == 4 && r.Quality == "BAD":
+		return widget.DangerImportance
+	case col == 4 && r.Quality == "UNCERTAIN":
+		return widget.WarningImportance
+	case col == 5 && r.Execution == "NOT_READ":
+		return widget.LowImportance
+	case col == 5 && r.Execution != "READ":
+		return widget.WarningImportance
+	}
+	return widget.MediumImportance
+}
+
+// summarySegment is one inline part of the colored result summary.
+func summarySegment(text string, color fyne.ThemeColorName) widget.RichTextSegment {
+	return &widget.TextSegment{Text: text, Style: widget.RichTextStyle{Inline: true, ColorName: color, TextStyle: fyne.TextStyle{Bold: color != theme.ColorNamePlaceHolder}}}
 }
 
 func (d *Desktop) refreshPointRows() {
@@ -156,7 +183,17 @@ func (d *Desktop) refreshPointRows() {
 	}
 	d.table.UnselectAll()
 	d.table.Refresh()
-	d.pointSummary.SetText(fmt.Sprintf("共 %d · GOOD %d / BAD %d / UNCERTAIN %d · 不存在 %d · 可写 %d · 请求失败 %d / 解析或类型错误 %d / 未读 %d", len(rr), counts["GOOD"], counts["BAD"], counts["UNCERTAIN"], counts["MISSING"], counts["WRITABLE"], counts["REQUEST_FAILED"], counts["PARSE_FAILED"]+counts["TYPE_MISMATCH"], counts["NOT_READ"]))
+	sep := summarySegment("  ·  ", theme.ColorNamePlaceHolder)
+	d.pointSummary.Segments = []widget.RichTextSegment{
+		summarySegment(fmt.Sprintf("共 %d", len(rr)), theme.ColorNameForeground), sep,
+		summarySegment(fmt.Sprintf("GOOD %d", counts["GOOD"]), theme.ColorNameSuccess), sep,
+		summarySegment(fmt.Sprintf("BAD %d", counts["BAD"]), theme.ColorNameError), sep,
+		summarySegment(fmt.Sprintf("UNCERTAIN %d", counts["UNCERTAIN"]), theme.ColorNameWarning), sep,
+		summarySegment(fmt.Sprintf("不存在 %d", counts["MISSING"]), theme.ColorNameError), sep,
+		summarySegment(fmt.Sprintf("可写 %d", counts["WRITABLE"]), theme.ColorNamePrimary), sep,
+		summarySegment(fmt.Sprintf("请求失败 %d / 解析或类型错误 %d / 未读 %d", counts["REQUEST_FAILED"], counts["PARSE_FAILED"]+counts["TYPE_MISMATCH"], counts["NOT_READ"]), theme.ColorNamePlaceHolder),
+	}
+	d.pointSummary.Refresh()
 	if d.jobFollow && len(rr) > 0 {
 		d.jobBar.SetValue(1 - float64(counts["NOT_READ"])/float64(len(rr)))
 	}

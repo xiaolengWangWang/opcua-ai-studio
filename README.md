@@ -1,12 +1,14 @@
 # OPC UA AI Studio
 
-参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.3.0`。
+参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.4.0`。
 
-Windows 发行包见 [Gitee Release v0.3.0](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.3.0) 或 [GitHub Release v0.3.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.3.0)，更新说明见 [版本说明](docs/releases/v0.3.0.md)。
+Windows 发行包见 [Gitee Release v0.4.0](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.4.0) 或 [GitHub Release v0.4.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.4.0)，更新说明见 [版本说明](docs/releases/v0.4.0.md)。
 
 ## Windows 桌面
 
-构建后的 `OPCUAAIStudio.exe` 可直接运行，无需安装 Go。界面包含点位与读写、节点浏览、通讯与日志、AI 诊断四个页面。
+构建后的 `OPCUAAIStudio.exe` 可直接运行，无需安装 Go。界面包含点位与读写、节点浏览、通讯与日志、AI 诊断四个页面。点位页左侧为分组操作栏，右侧结果表占满窗口高度、表头固定，按质量着色（GOOD 绿、BAD 红、UNCERTAIN 橙），可写点位蓝色标出；配色为工业蓝主题，跟随系统浅色或深色。
+
+程序启动后在后台检查 Gitee（失败时改用 GitHub）的最新版本，发现新版本时状态栏显示“新版本”按钮，也可点击“检查更新”手动检查。确认后下载发行包，按发布页的 `SHA256SUMS.txt` 校验，替换安装目录中的程序文件并重启；安装目录不可写或校验失败时不改动现有文件。
 
 1. 点击“启动本机演示”，读取 `ns=2;s=Counter`，初值为 Int32 42。
 2. 输入 123，勾选“允许写入”，点击“写入并读回”，确认 Endpoint、NodeID、类型和数值。
@@ -69,7 +71,7 @@ go build -o bin/opcua-sim.exe ./cmd/opcua-sim
 ```powershell
 go test -tags ci -count=1 ./...
 go vet -tags ci ./...
-powershell -NoProfile -ExecutionPolicy Bypass -File build/windows.ps1 -Version 0.3.0 -CompilerRoot D:\tools\winlibs-gcc16\mingw64
+powershell -NoProfile -ExecutionPolicy Bypass -File build/windows.ps1 -Version 0.4.0 -CompilerRoot D:\tools\winlibs-gcc16\mingw64
 ```
 
 Windows GUI 构建需要 x64 MinGW；运行程序无需编译环境，需要支持 OpenGL 的图形驱动。最终主程序 `OPCUAAIStudio.exe` 上限为 30,000,000 字节，写入图标及版本资源后超限则构建失败。产物位于 `dist/windows-gui/`，ZIP 包含 GUI、CLI、模拟器、说明和版本文件；校验与构建清单保存在 ZIP 同级目录。`-tags ci` 使用 Fyne 软件驱动进行自动化测试。

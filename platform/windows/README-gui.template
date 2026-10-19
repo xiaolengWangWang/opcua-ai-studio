@@ -18,5 +18,6 @@ OPC UA AI Studio {{VERSION}} — Windows x64
 记录保存到 %AppData%\OPCUAAIStudio\records，SQLite 按天 / 50 MB 轮转。
 记录是服务级请求和结果，不是原始线缆抓包。正常退出排空记录并释放演示端口。
 AI 诊断须先预览证据，再由用户点击发送到 DeepSeek，API Key 仅本次会话。
+状态栏“检查更新”检查 Gitee / GitHub 新版本；确认后下载、校验 SHA256、替换程序文件并重启。
 运行需要 OpenGL 图形驱动。应用日志：%AppData%\OPCUAAIStudio\app.log。
 本机演示未经过现场服务器或 PLC 实机认证。

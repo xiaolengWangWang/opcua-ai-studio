@@ -17,6 +17,11 @@ import (
 // exporting 50000 points must never block the window. Stop and the row's
 // cancel button both cancel it; message is shown when the job succeeds.
 func (d *Desktop) runFile(title string, fn func(ctx context.Context, report func(done, total int)) (message string, err error)) bool {
+	return d.runJob(title, fn, nil)
+}
+
+// runJob is runFile with then called after the job succeeds.
+func (d *Desktop) runJob(title string, fn func(ctx context.Context, report func(done, total int)) (message string, err error), then func()) bool {
 	if d.busy != 0 {
 		d.showError(errors.New("请等待当前操作完成或先停止"))
 		return false
@@ -50,6 +55,9 @@ func (d *Desktop) runFile(title string, fn func(ctx context.Context, report func
 	}, func() {
 		if message != "" {
 			dialog.ShowInformation("完成", message, d.win)
+		}
+		if then != nil {
+			then()
 		}
 	})
 	return true

@@ -6,6 +6,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"opcua-ai-studio/internal/device"
@@ -79,14 +80,24 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 	d.mode = widget.NewSelect([]string{"None", "Sign", "SignAndEncrypt"}, nil)
 	d.mode.SetSelected("None")
 	security := container.NewGridWithColumns(2, widget.NewForm(widget.NewFormItem("安全策略", d.policy), widget.NewFormItem("安全模式", d.mode), widget.NewFormItem("超时", d.timeout), widget.NewFormItem("用户名", d.username), widget.NewFormItem("密码", d.password)), widget.NewForm(widget.NewFormItem("客户端证书", d.cert), widget.NewFormItem("客户端私钥", d.key), widget.NewFormItem("可信服务器证书", d.serverCert)))
-	d.probeBtn = widget.NewButton("连接数测试", d.probeSessionsDialog)
-	row := container.NewBorder(nil, nil, widget.NewLabel("Endpoint"), container.NewHBox(d.discoverBtn, d.probeBtn, d.connectBtn, d.disconnectBtn), d.target)
-	return container.NewVBox(row, container.NewHBox(d.demoBtn, d.stopDemoBtn, widget.NewLabel("匿名演示 · 回环服务器 · Counter = 42")), widget.NewAccordion(widget.NewAccordionItem("安全与认证", security)), widget.NewSeparator())
+	d.probeBtn = widget.NewButtonWithIcon("连接数测试", theme.ComputerIcon(), d.probeSessionsDialog)
+	d.connectBtn.Importance = widget.HighImportance
+	row := container.NewBorder(nil, nil, widget.NewLabelWithStyle("Endpoint", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.discoverBtn, d.connectBtn, d.disconnectBtn), d.target)
+	demo := widget.NewLabel("匿名演示 · 回环服务器 · Counter = 42")
+	demo.Importance = widget.LowImportance
+	tools := container.NewHBox(d.demoBtn, d.stopDemoBtn, demo, layout.NewSpacer(), d.probeBtn)
+	return container.NewVBox(row, tools, widget.NewAccordion(widget.NewAccordionItem("安全与认证", security)))
+}
+
+// section groups related controls on a card under a bold title.
+func section(title string, objects ...fyne.CanvasObject) fyne.CanvasObject {
+	heading := widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	return widget.NewCard("", "", container.NewVBox(append([]fyne.CanvasObject{heading}, objects...)...))
 }
 func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	d.addresses = widget.NewMultiLineEntry()
-	d.addresses.SetMinRowsVisible(2)
-	d.addresses.SetPlaceHolder("每行一个 NodeID，例如 ns=2;s=Counter")
+	d.addresses.SetMinRowsVisible(4)
+	d.addresses.SetPlaceHolder("每行一个 NodeID，例如 ns=2;s=Counter\n浏览页点击变量会追加到这里")
 	d.kind = widget.NewSelect(device.Types, nil)
 	d.kind.SetSelected("Auto")
 	d.count = widget.NewEntry()
@@ -121,6 +132,7 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	d.writeValue.OnSubmitted = func(string) { d.confirmWrite() }
 	d.allowWrite = widget.NewCheck("允许写入", func(bool) { d.controls() })
 	d.writeBtn = widget.NewButtonWithIcon("写入并读回", theme.ConfirmIcon(), d.confirmWrite)
+	d.writeBtn.Importance = widget.DangerImportance
 	d.writeStatus = widget.NewLabel("")
 	d.writeStatus.Wrapping = fyne.TextWrapWord
 	d.singleNode = widget.NewEntry()
@@ -136,13 +148,14 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	d.singleNode.OnSubmitted = func(string) { d.verifyBtn.OnTapped() }
 	d.allRoot = widget.NewEntry()
 	d.allRoot.SetText("i=85")
-	d.fullBtn = widget.NewButton("全量读取", func() { d.startFullRead(d.allRoot.Text) })
-	d.stopReadBtn = widget.NewButton("停止读取", func() {
+	d.fullBtn = widget.NewButtonWithIcon("全量读取", theme.DownloadIcon(), func() { d.startFullRead(d.allRoot.Text) })
+	d.fullBtn.Importance = widget.HighImportance
+	d.stopReadBtn = widget.NewButtonWithIcon("停止读取", theme.MediaStopIcon(), func() {
 		if d.checkCancel != nil {
 			d.checkCancel()
 		}
 	})
-	d.pointSummary = widget.NewLabel("")
+	d.pointSummary = widget.NewRichText()
 	d.pointSummary.Wrapping = fyne.TextWrapWord
 	d.scanStatus = widget.NewLabel("")
 	d.scanStatus.Wrapping = fyne.TextWrapWord
@@ -163,12 +176,12 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 		}
 	}), d.jobBar)
 	d.jobBox.Hide()
-	d.table = newTextTable(func() int { return len(d.visible) + 1 }, d.pointCell, []float32{260, 85, 55, 160, 195, 270})
+	d.table = newTextTable(func() int { return len(d.visible) }, pointHeader, d.pointCell, d.pointStyle, []float32{260, 80, 55, 150, 190, 300})
 	d.table.OnSelected = func(id widget.TableCellID) {
-		if id.Row == 0 || id.Row > len(d.visible) {
+		if id.Row < 0 || id.Row >= len(d.visible) {
 			return
 		}
-		r := d.snapshot.Results[d.visible[id.Row-1]]
+		r := d.snapshot.Results[d.visible[id.Row]]
 		d.singleNode.SetText(r.Address.NodeID)
 		// The declared type lets an imported or BAD control point be written.
 		kind := string(r.Kind())
@@ -185,14 +198,25 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 		}
 		d.count.SetText(fmt.Sprint(n))
 	}
-	copy := widget.NewButton("复制结果", d.copyPointRows)
-	options := container.NewGridWithColumns(3, widget.NewForm(widget.NewFormItem("类型", d.kind)), widget.NewForm(widget.NewFormItem("数量", d.count)), widget.NewForm(widget.NewFormItem("轮询间隔", d.interval)))
-	single := container.NewBorder(nil, nil, widget.NewLabel("单点 NodeID"), d.verifyBtn, d.singleNode)
-	full := container.NewBorder(nil, nil, widget.NewLabel("全量父节点"), container.NewHBox(d.fullBtn, d.stopReadBtn), d.allRoot)
-	filters := container.NewBorder(nil, nil, container.NewHBox(widget.NewLabel("筛选"), d.resultFilter, d.exportBtn, d.exportAttrBtn), copy, d.pointSummary)
-	top := container.NewVBox(widget.NewLabel("节点清单（每行一个；浏览变量追加，结果选择用于单点操作）"), d.addresses, options, single, container.NewHBox(d.readBtn, d.pollBtn, d.stopPollBtn, d.importBtn), full, filters, d.scanStatus, d.jobBox, widget.NewSeparator())
-	bottom := container.NewVBox(widget.NewSeparator(), container.NewBorder(nil, nil, d.allowWrite, d.writeBtn, d.writeValue), d.writeStatus)
-	return container.NewBorder(top, bottom, nil, nil, d.table)
+	copy := widget.NewButtonWithIcon("复制结果", theme.ContentCopyIcon(), d.copyPointRows)
+	d.pollBtn.SetIcon(theme.MediaPlayIcon())
+	d.stopPollBtn.SetIcon(theme.MediaPauseIcon())
+	d.verifyBtn.SetIcon(theme.SearchIcon())
+	options := widget.NewForm(widget.NewFormItem("类型", d.kind), widget.NewFormItem("数量", d.count), widget.NewFormItem("轮询间隔", d.interval))
+	// Controls sit in a scrolling side column so the result table keeps the
+	// full window height for large lists.
+	controls := container.NewVBox(
+		section("节点清单", d.addresses, options, container.NewGridWithColumns(3, d.readBtn, d.pollBtn, d.stopPollBtn)),
+		section("单点验证", d.singleNode, d.verifyBtn),
+		section("全量读取", widget.NewForm(widget.NewFormItem("父节点", d.allRoot)), container.NewGridWithColumns(2, d.fullBtn, d.stopReadBtn)),
+		section("viSCADA 属性表", container.NewGridWithColumns(2, d.importBtn, d.exportAttrBtn)),
+		section("写入", d.writeValue, container.NewBorder(nil, nil, d.allowWrite, nil, d.writeBtn), d.writeStatus),
+	)
+	toolbar := container.NewBorder(nil, nil, container.NewHBox(widget.NewLabelWithStyle("筛选", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), d.resultFilter), container.NewHBox(d.exportBtn, copy))
+	results := container.NewBorder(container.NewVBox(toolbar, d.pointSummary, d.scanStatus, d.jobBox), nil, nil, nil, d.table)
+	split := container.NewHSplit(container.NewVScroll(controls), results)
+	split.SetOffset(.28)
+	return split
 }
 func (d *Desktop) browsePanel() fyne.CanvasObject {
 	d.browseRoot = widget.NewEntry()
@@ -221,12 +245,12 @@ func (d *Desktop) browsePanel() fyne.CanvasObject {
 		d.tabs.SelectIndex(0)
 		d.runCheck(func(ctx context.Context) error { return d.controller.ReadNodes(ctx, roots) }, nil)
 	})
-	d.browseTable = newTextTable(func() int { return len(d.snapshot.Nodes) + 1 }, d.browseCell, []float32{50, 400, 320, 210})
+	d.browseTable = newTextTable(func() int { return len(d.snapshot.Nodes) }, browseHeader, d.browseCell, d.browseStyle, []float32{50, 420, 320, 210})
 	d.browseTable.OnSelected = func(id widget.TableCellID) {
-		if id.Row == 0 || id.Row > len(d.snapshot.Nodes) {
+		if id.Row < 0 || id.Row >= len(d.snapshot.Nodes) {
 			return
 		}
-		n := d.snapshot.Nodes[id.Row-1]
+		n := d.snapshot.Nodes[id.Row]
 		if id.Col == 0 {
 			d.selectNode(n, !d.browseSelected[n.NodeID])
 			d.selectionChanged()
@@ -243,8 +267,13 @@ func (d *Desktop) browsePanel() fyne.CanvasObject {
 			d.browseRoot.SetText(n.NodeID)
 		}
 	}
+	d.browseBtn.SetIcon(theme.NavigateNextIcon())
+	d.readSelectedBtn.Importance = widget.HighImportance
+	hint := widget.NewLabel("点击“选择”列勾选节点，可多选或全选后一起读取：对象读取其下全部变量，变量读取自身。点击其他列：对象继续浏览，变量追加到清单。Objects 根节点为 i=85。")
+	hint.Wrapping = fyne.TextWrapWord
+	hint.Importance = widget.LowImportance
 	selection := container.NewBorder(nil, nil, container.NewHBox(d.selectAllBtn, d.clearSelectBtn, d.readSelectedBtn), nil, d.selectionLabel)
-	top := container.NewVBox(container.NewBorder(nil, nil, widget.NewLabel("父节点"), container.NewHBox(d.browseBtn, d.browseFullBtn), d.browseRoot), widget.NewLabel("点击“选择”列勾选节点，可多选或全选后一起读取：对象读取其下全部变量，变量读取自身。点击其他列：对象继续浏览，变量追加到清单。Objects 根节点为 i=85。"), selection)
+	top := widget.NewCard("", "", container.NewVBox(container.NewBorder(nil, nil, widget.NewLabelWithStyle("父节点", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.browseBtn, d.browseFullBtn), d.browseRoot), hint, selection))
 	return container.NewBorder(top, nil, nil, nil, d.browseTable)
 }
 func (d *Desktop) diagnosticsPanel() fyne.CanvasObject {
@@ -261,13 +290,23 @@ func (d *Desktop) diagnosticsPanel() fyne.CanvasObject {
 	return container.NewBorder(top, nil, nil, nil, split)
 }
 
-// newTextTable renders cells on demand, so only the visible rows are formatted.
-func newTextTable(rows func() int, cell func(row, col int) string, widths []float32) *widget.Table {
+// newTextTable renders cells on demand, so only the visible rows are formatted,
+// under a header row that stays in view while the rows scroll.
+func newTextTable(rows func() int, header []string, cell func(row, col int) string, style func(row, col int) widget.Importance, widths []float32) *widget.Table {
 	t := widget.NewTable(func() (int, int) { return rows(), len(widths) }, func() fyne.CanvasObject { return widget.NewLabel("") }, func(id widget.TableCellID, o fyne.CanvasObject) {
 		l := o.(*widget.Label)
-		l.TextStyle = fyne.TextStyle{Bold: id.Row == 0}
+		l.Importance = style(id.Row, id.Col)
 		l.SetText(cell(id.Row, id.Col))
 	})
+	t.ShowHeaderRow = true
+	t.CreateHeader = func() fyne.CanvasObject {
+		return widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	}
+	t.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
+		if id.Col >= 0 && id.Col < len(header) {
+			o.(*widget.Label).SetText(header[id.Col])
+		}
+	}
 	for i, w := range widths {
 		t.SetColumnWidth(i, w)
 	}
@@ -276,14 +315,18 @@ func newTextTable(rows func() int, cell func(row, col int) string, widths []floa
 
 var browseHeader = []string{"选择", "NodeID", "显示名称", "节点类型"}
 
-func (d *Desktop) browseCell(row, col int) string {
-	if row == 0 {
-		return browseHeader[col]
+func (d *Desktop) browseStyle(row, col int) widget.Importance {
+	if col == 0 && row < len(d.snapshot.Nodes) && d.browseSelected[d.snapshot.Nodes[row].NodeID] {
+		return widget.HighImportance
 	}
-	if row > len(d.snapshot.Nodes) {
+	return widget.MediumImportance
+}
+
+func (d *Desktop) browseCell(row, col int) string {
+	if row >= len(d.snapshot.Nodes) {
 		return ""
 	}
-	n := d.snapshot.Nodes[row-1]
+	n := d.snapshot.Nodes[row]
 	switch col {
 	case 0:
 		if d.browseSelected[n.NodeID] {
