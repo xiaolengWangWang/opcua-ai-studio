@@ -18,10 +18,11 @@ function Write-PackageText([string]$Path, [string]$Text, [Text.Encoding]$Encodin
 Push-Location $repoRoot
 try {
  New-Item -ItemType Directory -Force -Path $stage | Out-Null
+ # go:embed ships files as go reads them; encrypted help would show as ciphertext.
+ # Run without cgo: security software blocks freshly linked MinGW test binaries.
+ $env:CGO_ENABLED='0'; Invoke-Native {go test -count=1 ./assets/help}
  $env:PATH=(Split-Path $gcc)+';'+$env:PATH; $env:CC=$gcc; $env:CGO_ENABLED='1';$env:GOOS='windows';$env:GOARCH='amd64'
  $machine=(& $gcc -dumpmachine).Trim();if($machine -ne 'x86_64-w64-mingw32'){throw "Compiler target is $machine"}
- # go:embed ships files as go reads them; encrypted help would show as ciphertext.
- Invoke-Native {go test -count=1 ./assets/help}
  # Patch resources after linking to avoid colliding with MinGW/Fyne manifests.
  if(Test-Path -LiteralPath $syso){Remove-Item -LiteralPath $syso}
  $exe=Join-Path $stage 'OPCUAAIStudio.exe'
