@@ -246,9 +246,13 @@ func TestChinesePointsReadWriteAndBrowse(t *testing.T) {
 	if err := c.ReadAll(ctx, "ns=2;i=85"); err != nil {
 		t.Fatal(err)
 	}
-	names := map[string]string{}
+	names, writable := map[string]string{}, map[string]bool{}
 	for _, r := range c.Snapshot().Results {
 		names[r.Address.NodeID] = r.DisplayName
+		writable[r.Address.NodeID] = r.Writable()
+	}
+	if !writable[simulator.ChineseNodes[1]] || writable[simulator.ChineseNodes[0]] || writable[simulator.ChineseNodes[2]] {
+		t.Fatalf("access: %v", writable)
 	}
 	for _, n := range simulator.ChineseNodes {
 		if _, ok := names[n]; !ok {

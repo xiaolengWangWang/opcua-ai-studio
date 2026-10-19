@@ -67,10 +67,13 @@ func StartLoad(ctx context.Context, endpoint string, tags int) (*Server, error) 
 	}{{"Counter", int32(42)}, {"Temperature", float64(23.5)}, {"Enabled", true}, {"Message", "Hello OPC UA"}, {"Samples", []int32{1, 2, 3}}, {"ReadOnly", int32(7)}, {"热力站.一次供水温度", float64(95.5)}, {"热力站.循环泵启停", false}, {"热力站.站点名称", "一号换热站"}} {
 		name := p.name[strings.LastIndex(p.name, ".")+1:]
 		n := ns.AddNode(server.NewVariableNode(ua.NewStringNodeID(ns.ID(), p.name), name, p.value))
+		// Report access explicitly so writable demo points show as control points.
+		level := uint8(ua.AccessLevelTypeCurrentRead | ua.AccessLevelTypeCurrentWrite)
 		if p.name == "ReadOnly" || p.name == "热力站.一次供水温度" || p.name == "热力站.站点名称" {
-			n.SetAttribute(ua.AttributeIDAccessLevel, server.DataValueFromValue(uint8(ua.AccessLevelTypeCurrentRead)))
-			n.SetAttribute(ua.AttributeIDUserAccessLevel, server.DataValueFromValue(uint8(ua.AccessLevelTypeCurrentRead)))
+			level = uint8(ua.AccessLevelTypeCurrentRead)
 		}
+		n.SetAttribute(ua.AttributeIDAccessLevel, server.DataValueFromValue(level))
+		n.SetAttribute(ua.AttributeIDUserAccessLevel, server.DataValueFromValue(level))
 		ns.Objects().AddRef(n, id.HasComponent, true)
 	}
 	if tags > 0 {

@@ -130,7 +130,7 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 		name := "points-all.csv"
 		if filter == "含中文" {
 			name = "points-chinese.csv"
-			if len(rows) != 4 || rows[1][1] != simulator.ChineseNodes[0] || rows[2][3] != "true" {
+			if len(rows) != 4 || rows[1][1] != simulator.ChineseNodes[0] || rows[1][16] != "只读" || rows[2][3] != "true" || rows[2][16] != "读写" {
 				return fmt.Errorf("中文点位导出错误")
 			}
 		} else if filter == "BAD" {
