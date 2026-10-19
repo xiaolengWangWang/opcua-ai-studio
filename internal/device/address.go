@@ -5,6 +5,7 @@ import (
 	"github.com/gopcua/opcua/ua"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 type DataType string
@@ -18,6 +19,21 @@ var Types = []string{"Auto", "Boolean", "SByte", "Byte", "Int16", "UInt16", "Int
 
 var explicitNodeID = regexp.MustCompile(`^(?:ns=[0-9]+;)?[isgb]=`)
 
+// fullWidthPrefix matches the ns= and s= fields typed with a Chinese input
+// method, whose ＝ and ； would otherwise make the NodeID invalid.
+var fullWidthPrefix = regexp.MustCompile(`^(?:ns[=＝][0-9]+[;；])?[isgb][=＝]`)
+
+// HasChinese reports whether s contains Chinese characters, as the string
+// identifiers of many Chinese servers do.
+func HasChinese(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
 func NormalizeType(kind DataType) DataType {
 	for _, t := range Types {
 		if strings.EqualFold(string(kind), t) {
@@ -28,6 +44,10 @@ func NormalizeType(kind DataType) DataType {
 }
 func ParseAddress(text string, kind DataType, count int) (Address, error) {
 	text = strings.TrimLeft(text, " \t\r\n")
+	// Only the fields are converted: the identifier is kept as typed.
+	if m := fullWidthPrefix.FindString(text); m != "" {
+		text = strings.NewReplacer("＝", "=", "；", ";").Replace(m) + text[len(m):]
+	}
 	// Whitespace after s= belongs to the server's string identifier.
 	if !strings.HasPrefix(text, "s=") && !strings.Contains(text, ";s=") {
 		text = strings.TrimSpace(text)

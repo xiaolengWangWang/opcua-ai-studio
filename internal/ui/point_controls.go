@@ -67,8 +67,8 @@ func (d *Desktop) startFullRead(root string) {
 }
 
 // Filters lists the result filters; 不存在 and 可写 help check imported
-// attribute sheets and control points.
-var filters = []string{"全部", "GOOD", "BAD", "UNCERTAIN", "不存在", "可写（控制点位）", "请求失败", "解析/类型错误", "未读取"}
+// attribute sheets and control points, 含中文 finds Chinese NodeIDs.
+var filters = []string{"全部", "GOOD", "BAD", "UNCERTAIN", "不存在", "可写（控制点位）", "含中文", "请求失败", "解析/类型错误", "未读取"}
 
 func matchesPoint(r *device.ReadResult, filter string) bool {
 	switch filter {
@@ -78,6 +78,8 @@ func matchesPoint(r *device.ReadResult, filter string) bool {
 		return r.Missing()
 	case "可写（控制点位）":
 		return r.Writable()
+	case "含中文":
+		return device.HasChinese(r.Address.NodeID)
 	case "请求失败":
 		return r.Execution == "REQUEST_FAILED"
 	case "解析/类型错误":
@@ -177,6 +179,9 @@ func (d *Desktop) refreshPointRows() {
 		if r.Writable() {
 			counts["WRITABLE"]++
 		}
+		if device.HasChinese(r.Address.NodeID) {
+			counts["CHINESE"]++
+		}
 		if matchesPoint(r, filter) {
 			d.visible = append(d.visible, i)
 		}
@@ -191,6 +196,7 @@ func (d *Desktop) refreshPointRows() {
 		summarySegment(fmt.Sprintf("UNCERTAIN %d", counts["UNCERTAIN"]), theme.ColorNameWarning), sep,
 		summarySegment(fmt.Sprintf("不存在 %d", counts["MISSING"]), theme.ColorNameError), sep,
 		summarySegment(fmt.Sprintf("可写 %d", counts["WRITABLE"]), theme.ColorNamePrimary), sep,
+		summarySegment(fmt.Sprintf("含中文 %d", counts["CHINESE"]), theme.ColorNameForeground), sep,
 		summarySegment(fmt.Sprintf("请求失败 %d / 解析或类型错误 %d / 未读 %d", counts["REQUEST_FAILED"], counts["PARSE_FAILED"]+counts["TYPE_MISMATCH"], counts["NOT_READ"]), theme.ColorNamePlaceHolder),
 	}
 	d.pointSummary.Refresh()

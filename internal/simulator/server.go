@@ -9,10 +9,15 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 )
 
 const CounterNode = "ns=2;s=Counter"
+
+// ChineseNodes are demo points with Chinese string identifiers, as many
+// Chinese servers name their tags; the pump switch is writable.
+var ChineseNodes = []string{"ns=2;s=热力站.一次供水温度", "ns=2;s=热力站.循环泵启停", "ns=2;s=热力站.站点名称"}
 
 type Server struct {
 	Endpoint string
@@ -59,9 +64,10 @@ func StartLoad(ctx context.Context, endpoint string, tags int) (*Server, error) 
 	for _, p := range []struct {
 		name  string
 		value any
-	}{{"Counter", int32(42)}, {"Temperature", float64(23.5)}, {"Enabled", true}, {"Message", "Hello OPC UA"}, {"Samples", []int32{1, 2, 3}}, {"ReadOnly", int32(7)}} {
-		n := ns.AddNode(server.NewVariableNode(ua.NewStringNodeID(ns.ID(), p.name), p.name, p.value))
-		if p.name == "ReadOnly" {
+	}{{"Counter", int32(42)}, {"Temperature", float64(23.5)}, {"Enabled", true}, {"Message", "Hello OPC UA"}, {"Samples", []int32{1, 2, 3}}, {"ReadOnly", int32(7)}, {"热力站.一次供水温度", float64(95.5)}, {"热力站.循环泵启停", false}, {"热力站.站点名称", "一号换热站"}} {
+		name := p.name[strings.LastIndex(p.name, ".")+1:]
+		n := ns.AddNode(server.NewVariableNode(ua.NewStringNodeID(ns.ID(), p.name), name, p.value))
+		if p.name == "ReadOnly" || p.name == "热力站.一次供水温度" || p.name == "热力站.站点名称" {
 			n.SetAttribute(ua.AttributeIDAccessLevel, server.DataValueFromValue(uint8(ua.AccessLevelTypeCurrentRead)))
 			n.SetAttribute(ua.AttributeIDUserAccessLevel, server.DataValueFromValue(uint8(ua.AccessLevelTypeCurrentRead)))
 		}

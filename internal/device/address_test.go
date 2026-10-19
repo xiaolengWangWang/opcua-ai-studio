@@ -12,6 +12,23 @@ func TestNodeIDPreservesCaseAndPunctuation(t *testing.T) {
 	}
 }
 
+func TestChineseNodeIDsAndFullWidthFields(t *testing.T) {
+	for in, want := range map[string]string{
+		"ns=2;s=热力站.一次供水温度": "ns=2;s=热力站.一次供水温度",
+		"ns＝2；s＝热力站.一次供水温度": "ns=2;s=热力站.一次供水温度",
+		" s＝泵；启停":           "ns=0;s=泵；启停",
+		"ns=2;s=A＝B":        "ns=2;s=A＝B",
+	} {
+		a, err := ParseAddress(in, "Auto", 1)
+		if err != nil || a.NodeID != want {
+			t.Fatalf("%q: %+v %v", in, a, err)
+		}
+	}
+	if !HasChinese("ns=2;s=热力站.温度") || HasChinese("ns=2;s=Station.Temp") || HasChinese("ns=2;s=＝；") {
+		t.Fatal("Chinese detection")
+	}
+}
+
 func TestStringNodeIDWithSemicolonCanBeParsedAgain(t *testing.T) {
 	a, err := ParseAddress("ns=0;s=Pump;State ", "Auto", 1)
 	if err != nil {

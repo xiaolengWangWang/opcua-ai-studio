@@ -23,6 +23,7 @@ func TestIdentifierRoundTrip(t *testing.T) {
 		{"ns=2;s=Line1::Speed ", "Float", "2::s::Line1::Speed ::REAL"},
 		{"ns=4;g=550E8400-E29B-41D4-A716-446655440000", "Boolean", "4::g::550E8400-E29B-41D4-A716-446655440000::BOOL"},
 		{"ns=2;i=5", "UInt16", "2::i::5::UINT"},
+		{"ns=2;s=热力站.一次供水温度", "Double", "2::s::热力站.一次供水温度::LREAL"},
 	} {
 		got, err := Identifier(tc.node, tc.kind)
 		if tc.want == "" {
@@ -70,6 +71,9 @@ func TestWorkbookRoundTripOf50000Rows(t *testing.T) {
 	rows := make([]Attribute, 50000)
 	for i := range rows {
 		rows[i] = Attribute{Identifier: fmt.Sprintf("2::s::Station%03d.Tag<%d>&::LREAL", i/100, i), Access: []string{"1", "2", ""}[i%3]}
+		if i%7 == 0 {
+			rows[i].Identifier = fmt.Sprintf("2::s::换热站%03d.供水温度%d::LREAL", i/100, i)
+		}
 	}
 	var buf bytes.Buffer
 	start := time.Now()

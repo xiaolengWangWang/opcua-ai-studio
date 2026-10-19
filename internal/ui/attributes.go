@@ -89,7 +89,7 @@ func (d *Desktop) importAttributesDialog() {
 	open.Show()
 }
 
-// exportAttributesDialog offers the three exports of the current snapshot.
+// exportAttributesDialog offers the four exports of the current snapshot.
 func (d *Desktop) exportAttributesDialog() {
 	snapshot := d.snapshot
 	count := func(keep func(*device.ReadResult) bool) int {
@@ -118,6 +118,7 @@ func (d *Desktop) exportAttributesDialog() {
 		choice("全部点位", "全部", func(*device.ReadResult) bool { return true }),
 		choice("仅 GOOD 点位", "GOOD", func(r *device.ReadResult) bool { return r.Quality == "GOOD" }),
 		choice("仅控制点位（可写）", "控制点位", func(r *device.ReadResult) bool { return r.Writable() }),
+		choice("仅含中文点位", "含中文", func(r *device.ReadResult) bool { return device.HasChinese(r.Address.NodeID) }),
 	)
 	box = dialog.NewCustom("导出属性表", "取消", content, d.win)
 	box.Show()
@@ -128,7 +129,7 @@ func (d *Desktop) exportAttributes(snapshot service.Snapshot, label, tag string,
 	d.saveFile("导出属性表 · "+label, name, func(ctx context.Context, out io.Writer, report func(int, int)) (string, error) {
 		rows := make([]viscada.Attribute, 0, n)
 		skipped := map[string]int{}
-		long := 0
+		long, chinese := 0, 0
 		for i := range snapshot.Results {
 			r := &snapshot.Results[i]
 			if !keep(r) {
@@ -141,6 +142,9 @@ func (d *Desktop) exportAttributes(snapshot service.Snapshot, label, tag string,
 			}
 			if len([]rune(a.Identifier)) > 60 {
 				long++
+			}
+			if device.HasChinese(a.Identifier) {
+				chinese++
 			}
 			rows = append(rows, a)
 		}
@@ -156,6 +160,9 @@ func (d *Desktop) exportAttributes(snapshot service.Snapshot, label, tag string,
 			return "", err
 		}
 		message := fmt.Sprintf("已导出 %d 个属性（%s）。", len(rows), label)
+		if chinese > 0 && chinese < len(rows) {
+			message += fmt.Sprintf("其中 %d 个属性标识含中文。", chinese)
+		}
 		if len(reasons) > 0 {
 			message += "\n跳过：" + strings.Join(reasons, "；")
 		}

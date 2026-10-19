@@ -20,6 +20,6 @@ func main() {
 		log.Fatal(err)
 	}
 	defer s.Close()
-	log.Printf("演示已启动 %s；Counter=42 / Temperature=23.5 / Enabled=true / Message / Samples，压测点位 %d 个，按 Ctrl+C 退出", s.Endpoint, *tags)
+	log.Printf("演示已启动 %s；Counter=42 / Temperature=23.5 / Enabled=true / Message / Samples / 中文点位 ns=2;s=热力站.*，压测点位 %d 个，按 Ctrl+C 退出", s.Endpoint, *tags)
 	<-ctx.Done()
 }

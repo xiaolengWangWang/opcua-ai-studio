@@ -7,6 +7,7 @@ import (
 	"github.com/gopcua/opcua/ua"
 	"opcua-ai-studio/internal/device"
 	"opcua-ai-studio/internal/opcua"
+	"opcua-ai-studio/internal/simulator"
 	"testing"
 )
 
@@ -217,5 +218,44 @@ func TestReadAllRetainsFailureResults(t *testing.T) {
 	s := c.Snapshot()
 	if len(s.Results) != 1 || s.Results[0].Quality != "UNKNOWN" || s.Results[0].Error == "" {
 		t.Fatalf("failed point disappeared: %+v", s.Results)
+	}
+}
+
+func TestChinesePointsReadWriteAndBrowse(t *testing.T) {
+	c := New(Options{RecordDir: t.TempDir()})
+	defer c.Close()
+	ctx := context.Background()
+	if err := c.StartDemo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Typed with a Chinese input method: full-width ＝ and ； in the fields.
+	if err := c.Read(ctx, []Point{{"ns＝2；s＝热力站.一次供水温度", "Auto", 1}, {simulator.ChineseNodes[2], "Auto", 1}}); err != nil {
+		t.Fatal(err)
+	}
+	s := c.Snapshot()
+	if len(s.Results) != 2 || s.Results[0].Address.NodeID != simulator.ChineseNodes[0] || s.Results[0].Value.Real != 95.5 || s.Results[1].Value.Text != "一号换热站" {
+		t.Fatalf("Chinese points: %+v", s.Results)
+	}
+	pump := Point{simulator.ChineseNodes[1], "Boolean", 1}
+	if err := c.Write(ctx, WriteRequest{Point: pump, Value: "true", Generation: s.Generation}, true); err != nil {
+		t.Fatal(err)
+	}
+	if s = c.Snapshot(); s.WriteResult.State != "CONFIRMED" || s.Readback != "一致" {
+		t.Fatalf("write: %+v %s", s.WriteResult, s.Readback)
+	}
+	if err := c.ReadAll(ctx, "ns=2;i=85"); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]string{}
+	for _, r := range c.Snapshot().Results {
+		names[r.Address.NodeID] = r.DisplayName
+	}
+	for _, n := range simulator.ChineseNodes {
+		if _, ok := names[n]; !ok {
+			t.Fatalf("full read missed %s: %v", n, names)
+		}
+	}
+	if names[simulator.ChineseNodes[1]] != "循环泵启停" {
+		t.Fatalf("display name: %q", names[simulator.ChineseNodes[1]])
 	}
 }

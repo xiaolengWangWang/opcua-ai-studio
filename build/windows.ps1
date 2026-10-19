@@ -1,4 +1,4 @@
-param([string]$Version='0.4.0',[string]$CompilerRoot='D:\tools\winlibs-gcc16\mingw64')
+param([string]$Version='0.4.1',[string]$CompilerRoot='D:\tools\winlibs-gcc16\mingw64')
 $ErrorActionPreference='Stop'
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must be a numeric major.minor.patch' }
 $repoRoot=Split-Path -Parent $PSScriptRoot

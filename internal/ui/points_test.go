@@ -191,7 +191,9 @@ func TestFiltersFindMissingAndControlPoints(t *testing.T) {
 		{Address: device.Address{NodeID: "ns=2;s=Set", Type: "Auto", Count: 1}, Quality: "GOOD", Value: device.Value{Type: "Double", Real: 1}, NodeAttributes: device.NodeAttributes{Access: "READ_WRITE"}},
 	}
 	d.refresh(service.Snapshot{Revision: 99, State: "connected", Results: rr})
-	for filter, node := range map[string]string{"不存在": "ns=2;s=Missing", "可写（控制点位）": "ns=2;s=Set"} {
+	rr = append(rr, device.ReadResult{Address: device.Address{NodeID: "ns=2;s=热力站.供水温度", Type: "Auto", Count: 1}, Quality: "GOOD", Value: device.Value{Type: "Double", Real: 95.5}})
+	d.refresh(service.Snapshot{Revision: 100, State: "connected", Results: rr})
+	for filter, node := range map[string]string{"不存在": "ns=2;s=Missing", "可写（控制点位）": "ns=2;s=Set", "含中文": "ns=2;s=热力站.供水温度"} {
 		d.resultFilter.SetSelected(filter)
 		if len(d.visible) != 1 || d.pointCell(0, 0) != node {
 			t.Fatalf("%s: %+v", filter, d.visible)

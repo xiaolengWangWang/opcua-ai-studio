@@ -54,11 +54,30 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 			return fmt.Errorf("演示读取失败: %s", r.Error)
 		}
 	}
+	// Chinese string identifiers read, write and read back like any other.
+	var chinese []service.Point
+	for _, n := range simulator.ChineseNodes {
+		chinese = append(chinese, service.Point{Address: n, Type: "Auto", Count: 1})
+	}
+	if err := c.Read(ctx, chinese); err != nil {
+		return err
+	}
+	s = c.Snapshot()
+	if len(s.Results) != 3 || s.Results[0].Value.Real != 95.5 || s.Results[2].Value.Text != "一号换热站" {
+		return fmt.Errorf("中文点位读取失败")
+	}
+	pump := service.Point{Address: simulator.ChineseNodes[1], Type: "Boolean", Count: 1}
+	if err := c.Write(ctx, service.WriteRequest{Point: pump, Value: "true", Generation: s.Generation}, true); err != nil {
+		return err
+	}
+	if s = c.Snapshot(); s.WriteResult == nil || s.WriteResult.State != "CONFIRMED" || s.Readback != "一致" {
+		return fmt.Errorf("中文点位写入/读回验证失败")
+	}
 	if err := c.ReadAll(ctx, "ns=2;i=85"); err != nil {
 		return err
 	}
-	if len(c.Snapshot().Results) != 6 {
-		return fmt.Errorf("全量读取没有取得六个演示变量")
+	if len(c.Snapshot().Results) != 9 {
+		return fmt.Errorf("全量读取没有取得九个演示变量")
 	}
 	if err := c.VerifyPoint(ctx, service.Point{Address: "ns=2;s=Missing", Type: "Auto", Count: 1}); err != nil {
 		return err
@@ -80,7 +99,7 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 			counter = device.FormatValue(r.Value)
 		}
 	}
-	if good != 6 || bad != 1 || counter != "123" {
+	if good != 9 || bad != 1 || counter != "123" {
 		return fmt.Errorf("质量区分或单点结果保留失败")
 	}
 	im := capture()
@@ -99,7 +118,7 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 	if closeErr != nil {
 		return closeErr
 	}
-	for _, filter := range []string{"全部", "BAD"} {
+	for _, filter := range []string{"全部", "BAD", "含中文"} {
 		var buf bytes.Buffer
 		if err = export(&buf, filter); err != nil {
 			return err
@@ -109,12 +128,17 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 			return e
 		}
 		name := "points-all.csv"
-		if filter == "BAD" {
+		if filter == "含中文" {
+			name = "points-chinese.csv"
+			if len(rows) != 4 || rows[1][1] != simulator.ChineseNodes[0] || rows[2][3] != "true" {
+				return fmt.Errorf("中文点位导出错误")
+			}
+		} else if filter == "BAD" {
 			name = "points-bad.csv"
 			if len(rows) != 2 || rows[1][1] != "ns=2;s=Missing" || rows[1][4] != "BAD" {
 				return fmt.Errorf("BAD 导出错误")
 			}
-		} else if len(rows) != 8 {
+		} else if len(rows) != 11 {
 			return fmt.Errorf("全量结果导出行数错误")
 		}
 		if err = os.WriteFile(filepath.Join(dir, name), buf.Bytes(), 0644); err != nil {

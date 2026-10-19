@@ -40,7 +40,7 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 			d.target.SetText(d.controller.Snapshot().DemoTarget)
 			d.policy.SetSelected("None")
 			d.mode.SetSelected("None")
-			d.addresses.SetText(simulator.CounterNode)
+			d.addresses.SetText(strings.Join(append([]string{simulator.CounterNode}, simulator.ChineseNodes...), "\n"))
 			d.singleNode.SetText(simulator.CounterNode)
 			d.allRoot.SetText("ns=2;i=85")
 			d.browseRoot.SetText("ns=2;i=85")
@@ -83,7 +83,7 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 	d.probeBtn = widget.NewButtonWithIcon("连接数测试", theme.ComputerIcon(), d.probeSessionsDialog)
 	d.connectBtn.Importance = widget.HighImportance
 	row := container.NewBorder(nil, nil, widget.NewLabelWithStyle("Endpoint", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.discoverBtn, d.connectBtn, d.disconnectBtn), d.target)
-	demo := widget.NewLabel("匿名演示 · 回环服务器 · Counter = 42")
+	demo := widget.NewLabel("匿名演示 · 回环服务器 · Counter = 42 · 含中文点位")
 	demo.Importance = widget.LowImportance
 	tools := container.NewHBox(d.demoBtn, d.stopDemoBtn, demo, layout.NewSpacer(), d.probeBtn)
 	return container.NewVBox(row, tools, widget.NewAccordion(widget.NewAccordionItem("安全与认证", security)))
