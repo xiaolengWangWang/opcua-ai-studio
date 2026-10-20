@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,5 +224,45 @@ func TestRepeatedTimeoutsMarkTheConnectionLost(t *testing.T) {
 	read()
 	if s := c.Snapshot(); s.State != "error" || !strings.Contains(s.LastError, "连续 2 次未响应") {
 		t.Fatalf("two timeouts in a row kept the connection: %s %s", s.State, s.LastError)
+	}
+}
+
+func TestAutoRefreshKeepsNamesPathsAndAccess(t *testing.T) {
+	d := &pointDriver{tree: map[string][]device.Node{
+		"i=85":         {{NodeID: "ns=2;s=Line1", DisplayName: "一号线", Class: "Object"}},
+		"ns=2;s=Line1": {{NodeID: "ns=2;s=Line1.Speed", DisplayName: "速度", Class: "Variable"}, {NodeID: "ns=2;s=Line1.Run", DisplayName: "运行", Class: "Variable"}},
+	}}
+	c := pointController(t, d)
+	ctx := context.Background()
+	if err := c.ReadAll(ctx, "i=85"); err != nil {
+		t.Fatal(err)
+	}
+	var reads atomic.Int32
+	d.afterRead = func() { reads.Add(1) }
+	if err := c.StartRefresh(ctx, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if s := c.Snapshot(); !s.Polling || !s.AutoRefresh {
+		t.Fatalf("refresh state: %v %v", s.Polling, s.AutoRefresh)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for reads.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	c.StopPolling()
+	s := c.Snapshot()
+	if reads.Load() < 2 || s.AutoRefresh || !strings.HasPrefix(s.ScanStatus, "自动刷新 · 2 点") {
+		t.Fatalf("reads %d, state %v, status %q", reads.Load(), s.AutoRefresh, s.ScanStatus)
+	}
+	for _, r := range s.Results {
+		if r.DisplayName == "" || len(r.Path) != 2 || r.Scope != "自动刷新" || r.Value.Integer != "42" {
+			t.Fatalf("refreshed point lost its name or path: %+v", r)
+		}
+	}
+	c.mu.Lock()
+	c.snap.Results = nil
+	c.mu.Unlock()
+	if err := c.StartRefresh(ctx, time.Second); err == nil {
+		t.Fatal("refresh started without points")
 	}
 }

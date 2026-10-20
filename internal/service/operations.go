@@ -14,10 +14,20 @@ func (c *Controller) Read(ctx context.Context, points []Point) error {
 }
 
 func (c *Controller) read(ctx context.Context, points []Point, generation uint64) error {
-	return c.readMode(ctx, points, generation, false)
+	return c.readMode(ctx, points, generation, readList)
 }
 
-func (c *Controller) readMode(ctx context.Context, points []Point, generation uint64, merge bool) error {
+// readKind says what a read does with the result list.
+type readKind int
+
+const (
+	readList    readKind = iota // replaces it
+	readSingle                  // merges one point, with its type and access
+	readRefresh                 // merges new values into the shown points
+)
+
+func (c *Controller) readMode(ctx context.Context, points []Point, generation uint64, kind readKind) error {
+	merge := kind != readList
 	s, ctx, done, e := c.acquire(ctx, generation)
 	if e != nil {
 		return e
@@ -36,12 +46,9 @@ func (c *Controller) readMode(ctx context.Context, points []Point, generation ui
 		return e
 	}
 	// A single point also reads its type and access, for the verification card.
-	rr, e := readBatches(ctx, s.d, aa, merge, nil)
+	rr, e := readBatches(ctx, s.d, aa, kind == readSingle, nil)
 	taskID := time.Now().UTC().Format("20060102T150405.000000000Z")
-	scope := "节点清单"
-	if merge {
-		scope = aa[0].NodeID
-	}
+	scope := map[readKind]string{readList: "节点清单", readSingle: aa[0].NodeID, readRefresh: "自动刷新"}[kind]
 	for i := range rr {
 		rr[i].TaskID, rr[i].Scope, rr[i].Complete = taskID, scope, e == nil
 	}
@@ -63,9 +70,13 @@ func (c *Controller) readMode(ctx context.Context, points []Point, generation ui
 		} else {
 			c.snap.Results = rr
 		}
-		c.snap.ScanStatus = fmt.Sprintf("读取完成 · %d 点", len(aa))
-		if merge {
+		switch kind {
+		case readList:
+			c.snap.ScanStatus = fmt.Sprintf("读取完成 · %d 点", len(aa))
+		case readSingle:
 			c.snap.ScanStatus = "单点验证完成 · " + aa[0].NodeID
+		case readRefresh:
+			c.snap.ScanStatus = fmt.Sprintf("自动刷新 · %d 点 · %s", len(aa), time.Now().Format("15:04:05"))
 		}
 		if e != nil {
 			c.snap.ScanStatus = "读取未完成：" + e.Error()
@@ -167,7 +178,29 @@ func (c *Controller) Write(ctx context.Context, req WriteRequest, approved bool)
 	}
 	return errors.Join(writeErr, e)
 }
+
+// StartPolling reads the points every interval, replacing the result list.
 func (c *Controller) StartPolling(ctx context.Context, points []Point, interval time.Duration) error {
+	return c.startPoll(ctx, points, interval, readList)
+}
+
+// StartRefresh reads the points in the result list every interval and merges
+// their new values, keeping each point's name, browse path, type and access.
+func (c *Controller) StartRefresh(ctx context.Context, interval time.Duration) error {
+	c.mu.Lock()
+	rr := c.snap.Results
+	c.mu.Unlock()
+	if len(rr) == 0 {
+		return errors.New("结果中没有可刷新的点位，请先读取")
+	}
+	points := make([]Point, len(rr))
+	for i, r := range rr {
+		points[i] = Point{r.Address.NodeID, r.Address.Type, r.Address.Count}
+	}
+	return c.startPoll(ctx, points, interval, readRefresh)
+}
+
+func (c *Controller) startPoll(ctx context.Context, points []Point, interval time.Duration, kind readKind) error {
 	if interval < 100*time.Millisecond {
 		return errors.New("轮询间隔不得小于 100 ms")
 	}
@@ -183,9 +216,10 @@ func (c *Controller) StartPolling(ctx context.Context, points []Point, interval 
 	c.stopPollLocked()
 	pctx, cancel := context.WithCancel(ctx)
 	c.pollCancel = cancel
-	c.poll = pollSpec{append([]Point(nil), points...), interval}
+	c.poll = pollSpec{append([]Point(nil), points...), interval, kind}
 	seq, gen := c.pollSeq, c.snap.Generation
 	c.snap.Polling = true
+	c.snap.AutoRefresh = kind == readRefresh
 	c.snap.Revision++
 	c.ops.Add(1)
 	c.mu.Unlock()
@@ -196,6 +230,7 @@ func (c *Controller) StartPolling(ctx context.Context, points []Point, interval 
 			c.mu.Lock()
 			if c.pollSeq == seq {
 				c.snap.Polling = false
+				c.snap.AutoRefresh = false
 				c.pollCancel = nil
 				c.snap.Revision++
 			}
@@ -212,7 +247,7 @@ func (c *Controller) StartPolling(ctx context.Context, points []Point, interval 
 			// Disconnect and shutdown still cancel the session and its active read.
 			// A failed read shows in the results and polling goes on: a lost
 			// connection stops it, and a reconnect resumes it.
-			c.read(ctx, points, gen)
+			c.readMode(ctx, points, gen, kind)
 			timer := time.NewTimer(interval)
 			select {
 			case <-pctx.Done():

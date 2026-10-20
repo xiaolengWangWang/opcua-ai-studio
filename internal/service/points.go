@@ -37,7 +37,7 @@ var errTooLarge = fmt.Errorf("父节点下超过 %d 个变量或 %d 个节点，
 // discarding the rest of the point list.
 func (c *Controller) VerifyPoint(ctx context.Context, point Point) error {
 	c.StopPolling()
-	return c.readMode(ctx, []Point{point}, 0, true)
+	return c.readMode(ctx, []Point{point}, 0, readSingle)
 }
 
 // scanTask publishes one read task's results while they arrive.

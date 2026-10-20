@@ -18,7 +18,11 @@ type Attribute struct {
 	Identifier string // 属性标识
 	Name       string // 属性名称
 	Access     string // 读写模式: 1 只读, 2 读写, "" unknown
+	Type       string // 数据类型: 1 整数, 2 浮点数, 3 双精度浮点数, 4 字符, 6 布尔; written, not read
 }
+
+// typeCodes are the platform's 数据类型 codes by OPC UA type.
+var typeCodes = map[device.DataType]string{"Boolean": "6", "SByte": "1", "Byte": "1", "Int16": "1", "UInt16": "1", "Int32": "1", "UInt32": "1", "Int64": "1", "UInt64": "1", "Float": "2", "Double": "3", "String": "4"}
 
 // The platform's types by OPC UA type, preferring the numeric IEC names over
 // the bit-string ones (UINT over WORD).
@@ -132,7 +136,14 @@ func FromResult(r device.ReadResult) (Attribute, error) {
 	if err != nil {
 		return Attribute{}, err
 	}
-	a := Attribute{Identifier: id}
+	// The platform requires a name: the display name, else the identifier's
+	// last part, as Temp for ns=2;s=Line1.Temp.
+	name := r.DisplayName
+	if name == "" {
+		name = device.Identifier(r.Address.NodeID)
+		name = name[strings.LastIndexAny(name, "./\\")+1:]
+	}
+	a := Attribute{Identifier: id, Name: name, Type: typeCodes[r.Kind()]}
 	if r.Writable() {
 		a.Access = "2"
 	} else if r.Access == "READ" {

@@ -25,10 +25,11 @@ func (d *Desktop) ExportPointsCSV(out io.Writer, filter string) error {
 }
 
 // ShowSearch sets the result search and shows the table or the tree, as the
-// smoke test captures them.
-func (d *Desktop) ShowSearch(search string, tree bool) {
+// smoke test captures them; a tab index of 2 shows the communication tab.
+func (d *Desktop) ShowSearch(search string, tree bool, tab int) {
 	d.search.SetText(search)
 	d.viewMode.SetSelected(map[bool]string{false: "表格", true: "树状"}[tree])
+	d.tabs.SelectIndex(tab)
 }
 
 // exportPointsCSV writes the rows matching q; done reports the rows written

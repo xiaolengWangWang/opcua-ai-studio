@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2/widget"
 	"opcua-ai-studio/internal/device"
@@ -73,6 +74,11 @@ func (d *Desktop) selectResult(r device.ReadResult) {
 		n = max(1, len(r.Value.Elements))
 	}
 	d.singleCount.SetText(strconv.Itoa(n))
+	// A control point's current value is where a new set value starts.
+	if r.Writable() && r.Value.Type != "" && r.Value.Elements == nil {
+		d.writeValue.SetText(device.FormatValue(r.Value))
+	}
+	d.updateWriteInput()
 	d.showSingle(&r, "")
 }
 
@@ -93,7 +99,10 @@ func (d *Desktop) showSingle(r *device.ReadResult, identifier string) {
 	if row[4] != "" {
 		lines = append(lines, "值："+row[4])
 	}
-	lines = append(lines, "质量："+row[5], "执行："+row[6])
+	lines = append(lines, "质量："+row[5], "执行："+row[7])
+	if row[6] != "" {
+		lines = append(lines, "时间："+row[6])
+	}
 	ok := r.Quality == "GOOD" && r.Execution == "READ"
 	d.singleIdent = ""
 	if identifier != "" {
@@ -231,4 +240,14 @@ func (d *Desktop) refreshReference() {
 	d.refLabel.Importance = importance
 	d.refLabel.SetText(text)
 	d.refBox.Show()
+}
+
+// startRefresh re-reads the shown points at the chosen interval.
+func (d *Desktop) startRefresh() {
+	interval, err := time.ParseDuration(d.refreshInterval.Selected)
+	if err != nil {
+		d.showError(err)
+		return
+	}
+	d.run(func(ctx context.Context) error { return d.controller.StartRefresh(ctx, interval) }, nil)
 }

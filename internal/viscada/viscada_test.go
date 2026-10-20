@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"opcua-ai-studio/internal/device"
 	"strings"
 	"testing"
@@ -150,5 +151,42 @@ func TestReadsSharedStringsAndCancels(t *testing.T) {
 	cancel()
 	if err := WriteAttributes(ctx, &bytes.Buffer{}, make([]Attribute, 10), nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("write ignored cancellation: %v", err)
+	}
+}
+
+func TestFromResultFillsNameAndPlatformType(t *testing.T) {
+	for _, tc := range []struct {
+		r          device.ReadResult
+		name, kind string
+	}{
+		{device.ReadResult{Address: device.Address{NodeID: "ns=2;s=Line1.Temp"}, Value: device.Value{Type: "Double"}}, "Temp", "3"},
+		{device.ReadResult{Address: device.Address{NodeID: "ns=2;s=热力站.循环泵启停"}, DisplayName: "循环泵启停", Value: device.Value{Type: "Boolean"}}, "循环泵启停", "6"},
+		{device.ReadResult{Address: device.Address{NodeID: "ns=3;i=1007"}, Value: device.Value{Type: "UInt16"}}, "1007", "1"},
+		{device.ReadResult{Address: device.Address{NodeID: "ns=2;s=Channel1/Device1/Status"}, Value: device.Value{Type: "String"}}, "Status", "4"},
+		{device.ReadResult{Address: device.Address{NodeID: "ns=2;s=Setpoint"}, Value: device.Value{Type: "Float"}}, "Setpoint", "2"},
+	} {
+		a, err := FromResult(tc.r)
+		if err != nil || a.Name != tc.name || a.Type != tc.kind {
+			t.Fatalf("%s: %+v %v", tc.r.Address.NodeID, a, err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := WriteAttributes(context.Background(), &buf, []Attribute{{Identifier: "2::s::Temp::LREAL", Name: "温度", Access: "1", Type: "3"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	z, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range z.File {
+		if f.Name != "xl/worksheets/sheet2.xml" {
+			continue
+		}
+		r, _ := f.Open()
+		body, _ := io.ReadAll(r)
+		r.Close()
+		if !bytes.Contains(body, []byte(`<c r="H2" s="4" t="n"><v>3</v></c>`)) || !bytes.Contains(body, []byte(`<t xml:space="preserve">温度</t>`)) {
+			t.Fatalf("name or data type missing: %s", body)
+		}
 	}
 }

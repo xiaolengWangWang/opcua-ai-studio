@@ -25,6 +25,7 @@ const (
 	colIdentifier = 1
 	colName       = 2
 	colAccess     = 4
+	colType       = 7
 )
 
 // WriteAttributes writes the platform's attribute workbook, streaming the rows
@@ -94,6 +95,10 @@ func WriteAttributes(ctx context.Context, out io.Writer, rows []Attribute, done 
 			case col == colAccess && a.Access != "":
 				b.WriteString(`" s="4" t="n"><v>`)
 				b.WriteString(a.Access)
+				b.WriteString(`</v></c>`)
+			case col == colType && a.Type != "":
+				b.WriteString(`" s="4" t="n"><v>`)
+				b.WriteString(a.Type)
 				b.WriteString(`</v></c>`)
 			default:
 				b.WriteString(`" s="4"/>`)

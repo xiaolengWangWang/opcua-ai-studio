@@ -1,0 +1,16 @@
+OPC UA AI Studio 命令行工具 {{VERSION}} — Windows x64
+
+本包只含命令行工具和模拟器；桌面程序请下载 OPCUAAIStudio-{{VERSION}}-Windows-x64.exe 或完整包 OPCUAAIStudio-{{VERSION}}-Windows-x64.zip。
+
+opcua-sim.exe：本机 OPC UA 模拟器。
+  .\opcua-sim.exe -endpoint opc.tcp://127.0.0.1:4840
+  加 -tags 50000 在 ns=3;s=Load 下生成 50000 个 Double 压测点：每 10 个有 1 个可写，每 50 个有 1 个返回 BadNoCommunication。
+
+opcua-cli.exe：命令行浏览、读取、写入，便于脚本化。
+  .\opcua-cli.exe -endpoint opc.tcp://127.0.0.1:4840 endpoints
+  .\opcua-cli.exe -endpoint opc.tcp://127.0.0.1:4840 browse i=85
+  .\opcua-cli.exe -endpoint opc.tcp://127.0.0.1:4840 -json read 'ns=2;s=Counter'
+  .\opcua-cli.exe -endpoint opc.tcp://127.0.0.1:4840 -type Int32 -allow-write write 'ns=2;s=Counter' 123
+  写入须同时指定 -type 和 -allow-write；运行 .\opcua-cli.exe -h 查看全部参数。
+
+两者均无需安装 Go 或 MinGW，不需要图形驱动。

@@ -28,7 +28,7 @@ type Snapshot struct {
 	ScanStatus, BrowseStatus                                                       string
 	Revision, Generation                                                           uint64
 	State, Target, Family, DemoTarget, LastError, RecordDir, RecordError, Readback string
-	Polling                                                                        bool
+	Polling, AutoRefresh                                                           bool // AutoRefresh: the poll refreshes the shown points
 	Results                                                                        []device.ReadResult
 	Nodes                                                                          []device.Node
 	WriteResult                                                                    *device.WriteResult
@@ -170,6 +170,7 @@ func (c *Controller) stopPollLocked() {
 	}
 	c.pollSeq++
 	c.snap.Polling = false
+	c.snap.AutoRefresh = false
 	c.snap.Revision++
 }
 func (c *Controller) detachLocked(state string) *session {

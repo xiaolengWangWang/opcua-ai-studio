@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"fyne.io/fyne/v2"
@@ -37,10 +36,10 @@ type Desktop struct {
 	busy                                                                                                             int
 	revision                                                                                                         uint64
 	snapshot                                                                                                         service.Snapshot
-	target, timeout, username, password, cert, key, serverCert, addresses, count, interval, writeValue, browseRoot   *widget.Entry
+	timeout, username, password, cert, key, serverCert, addresses, count, interval, writeValue, browseRoot           *widget.Entry
 	policy, mode, kind                                                                                               *widget.Select
 	allowWrite                                                                                                       *widget.Check
-	status, lastError, recordStatus, writeStatus, logs, events                                                       *widget.Label
+	status, lastError, recordStatus, writeStatus, logs                                                               *widget.Label
 	activity                                                                                                         *widget.Activity
 	connectBtn, disconnectBtn, demoBtn, stopDemoBtn, readBtn, pollBtn, stopPollBtn, writeBtn, browseBtn, discoverBtn *widget.Button
 	table, browseTable                                                                                               *widget.Table
@@ -85,16 +84,42 @@ type Desktop struct {
 	// Connection profiles, server search and node search.
 	profile                                                                                *widget.Select
 	autoReconnect                                                                          *widget.Check
-	security                                                                               *widget.Accordion
+	target                                                                                 *widget.SelectEntry // with the recent endpoints
+	securityBox                                                                            *fyne.Container
 	scanBtn, serverInfoBtn, saveProfileBtn, deleteProfileBtn, nodeSearchBtn, stopSearchBtn *widget.Button
-	nodeSearch                                                                             *widget.Entry
-	nodeSearchMode                                                                         *widget.RadioGroup
-	browseStatus                                                                           *widget.Label
+	securityBtn, moreBtn                                                                   *widget.Button
+	// Points tab layout.
+	sidebar     *widget.Accordion
+	emptyHint   *widget.Label
+	writeChoice *widget.RadioGroup // true / false for a Boolean point
+	treeSearch  string             // the search the tree was last opened for
+	// Communication tab: the requests shown, newest first.
+	packetTable               *widget.Table
+	packetFilter              *widget.Select
+	packetSearch              *widget.Entry
+	packetStats, packetDetail *widget.Label
+	packets                   []device.Event
+	packetsKey                string
+	packetsSince              time.Time // 清空显示 hides older requests
+	// Result table: the sort column, -1 for none, and values seen changing.
+	sortCol    int
+	sortDesc   bool
+	lastValues map[string]string
+	changedAt  map[string]time.Time
+	// Auto refresh of the shown points, and the folding side column.
+	autoRefresh     *widget.Check
+	refreshInterval *widget.Select
+	syncing         bool // the check follows the snapshot, not a click
+	split           *container.Split
+	splitOffset     float64 // the side column width to restore after folding
+	nodeSearch      *widget.Entry
+	nodeSearchMode  *widget.RadioGroup
+	browseStatus    *widget.Label
 }
 
 func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &Desktop{app: a, controller: c, ctx: ctx, cancel: cancel, version: version}
+	d := &Desktop{app: a, controller: c, ctx: ctx, cancel: cancel, version: version, sortCol: -1}
 	d.win = a.NewWindow("OPC UA AI Studio " + version)
 	d.win.SetIcon(icon.Application())
 	d.status = widget.NewLabelWithStyle("未连接", fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
@@ -132,8 +157,20 @@ func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 	footer := container.NewBorder(widget.NewSeparator(), nil, nil, container.NewHBox(d.updateBtn, d.checkUpdateBtn, help, open), d.recordStatus)
 	connection := widget.NewCard("", "", d.connectionPanel())
 	d.win.SetContent(container.NewPadded(container.NewBorder(container.NewVBox(header, connection, d.lastError), footer, nil, nil, d.tabs)))
+	// The last window size, else 1280 × 860; either within the work area, so
+	// the window fits a 1366 × 768 laptop.
 	w, h := platform.WorkArea()
-	d.win.Resize(platform.FitSize(fyne.NewSize(1280, 860), w, h, d.win.Canvas().Scale()))
+	want := fyne.NewSize(1280, 860)
+	if p := a.Preferences(); p.Float("window-width") >= 800 && p.Float("window-height") >= 560 {
+		want = fyne.NewSize(float32(p.Float("window-width")), float32(p.Float("window-height")))
+	}
+	size := platform.FitSize(want, w, h, d.win.Canvas().Scale())
+	d.win.Resize(size)
+	// A narrow screen starts with a narrower side column.
+	if size.Width < 1200 {
+		d.splitOffset = .24
+		d.split.SetOffset(d.splitOffset)
+	}
 	d.loadInputs()
 	d.refresh(c.Snapshot())
 	d.win.SetCloseIntercept(d.quit)
@@ -142,6 +179,9 @@ func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 
 // quit records and releases everything before the app exits.
 func (d *Desktop) quit() {
+	size := d.win.Canvas().Size()
+	d.app.Preferences().SetFloat("window-width", float64(size.Width))
+	d.app.Preferences().SetFloat("window-height", float64(size.Height))
 	d.cancel()
 	go func() { d.Shutdown(); fyne.Do(func() { d.win.SetCloseIntercept(nil); d.win.Close(); d.app.Quit() }) }()
 }
@@ -248,6 +288,21 @@ func (d *Desktop) controls() {
 	set(d.disconnectBtn, idle && (connected || d.snapshot.State == "reconnecting"))
 	set(d.demoBtn, idle && d.snapshot.DemoTarget == "")
 	set(d.stopDemoBtn, idle && d.snapshot.DemoTarget != "")
+	// One button per state: connect or disconnect, start or stop the demo.
+	show := func(o fyne.CanvasObject, on bool) {
+		if on != o.Visible() {
+			if on {
+				o.Show()
+			} else {
+				o.Hide()
+			}
+		}
+	}
+	session := connected || d.snapshot.State == "reconnecting" || d.snapshot.State == "connecting"
+	show(d.connectBtn, !session)
+	show(d.disconnectBtn, session)
+	show(d.demoBtn, d.snapshot.DemoTarget == "")
+	show(d.stopDemoBtn, d.snapshot.DemoTarget != "")
 	set(d.readBtn, idle && connected)
 	set(d.verifyBtn, idle && connected)
 	set(d.fullBtn, idle && connected)
@@ -263,6 +318,17 @@ func (d *Desktop) controls() {
 	set(d.stopPollBtn, d.snapshot.Polling)
 	set(d.writeBtn, idle && connected && d.allowWrite.Checked)
 	set(d.browseBtn, idle && connected)
+	// The check follows the controller: a lost connection or a list poll stops it.
+	if d.autoRefresh.Checked != d.snapshot.AutoRefresh {
+		d.syncing = true
+		d.autoRefresh.SetChecked(d.snapshot.AutoRefresh)
+		d.syncing = false
+	}
+	if connected && len(d.snapshot.Results) > 0 {
+		d.autoRefresh.Enable()
+	} else if !d.snapshot.AutoRefresh {
+		d.autoRefresh.Disable()
+	}
 	if idle {
 		d.activity.Stop()
 		d.activity.Hide()
@@ -331,24 +397,15 @@ func (d *Desktop) refresh(s service.Snapshot) {
 		d.writeStatus.SetText("写入默认禁用；勾选允许写入后，每次操作仍须确认。")
 	}
 	d.logs.SetText(strings.Join(s.Logs, "\n"))
-	var lines []string
-	for _, e := range s.Packets {
-		var targets []string
-		for _, a := range e.Targets[:min(len(e.Targets), 3)] {
-			targets = append(targets, a.NodeID)
-		}
-		target := strings.Join(targets, ", ")
-		if n := max(len(e.Targets), e.Total); n > 3 {
-			target += fmt.Sprintf(" 等 %d 个", n)
-		}
-		lines = append(lines, fmt.Sprintf("%s  #%d  %s  %s  %s  %s", e.Time.Format("15:04:05.000"), e.RequestID, e.Dir, e.Operation, e.Status, target))
-	}
-	d.events.SetText(strings.Join(lines, "\n"))
+	d.refreshPackets(false)
 	d.controls()
 }
 func (d *Desktop) config() (service.Config, error) {
 	cfg := service.DefaultConfig()
-	cfg.Target = strings.TrimSpace(d.target.Text)
+	cfg.Target = normalizeEndpoint(d.target.Text)
+	if cfg.Target != d.target.Text {
+		d.target.SetText(cfg.Target)
+	}
 	cfg.AutoReconnect = d.autoReconnect.Checked
 	cfg.Policy = d.policy.Selected
 	cfg.Mode = d.mode.Selected
@@ -406,6 +463,7 @@ func (d *Desktop) saveInputs() {
 func (d *Desktop) loadInputs() {
 	p := d.app.Preferences()
 	d.target.SetText(p.String("endpoint"))
+	d.target.SetOptions(d.endpointHistory())
 	d.policy.SetSelected(p.StringWithFallback("policy", "None"))
 	d.mode.SetSelected(p.StringWithFallback("mode", "None"))
 	d.timeout.SetText(p.StringWithFallback("timeout", "5s"))
@@ -417,14 +475,6 @@ func (d *Desktop) loadInputs() {
 	d.serverCert.SetText(p.String("server-cert"))
 	d.autoReconnect.SetChecked(p.BoolWithFallback("auto-reconnect", true))
 	d.storeProfiles(d.profiles(), "")
-}
-func (d *Desktop) copyEvents() {
-	b, err := json.MarshalIndent(d.controller.Snapshot().Packets, "", "  ")
-	if err != nil {
-		d.showError(err)
-		return
-	}
-	d.win.Clipboard().SetContent(string(b))
 }
 func (d *Desktop) confirmWrite() {
 	if d.busy != 0 {
@@ -445,7 +495,14 @@ func (d *Desktop) confirmWrite() {
 		return
 	}
 	req := service.WriteRequest{Point: p, Value: d.writeValue.Text, Generation: s.Generation}
-	dialog.ShowConfirm("确认 OPC UA 写入", fmt.Sprintf("Endpoint: %s\nNodeID: %s\n类型: %s，数量: %d\n值: %s", s.Target, req.Point.Address, req.Point.Type, req.Point.Count, req.Value), func(ok bool) {
+	// The current value shows what the write changes.
+	current := "未读取"
+	for i := range s.Results {
+		if r := &s.Results[i]; r.Address.NodeID == p.Address && r.Value.Type != "" {
+			current = device.FormatValue(r.Value)
+		}
+	}
+	dialog.ShowConfirm("确认 OPC UA 写入", fmt.Sprintf("Endpoint: %s\nNodeID: %s\n类型: %s，数量: %d\n当前值: %s\n写入值: %s", s.Target, req.Point.Address, req.Point.Type, req.Point.Count, current, req.Value), func(ok bool) {
 		if ok && d.allowWrite.Checked {
 			d.run(func(ctx context.Context) error { return d.controller.Write(ctx, req, true) }, nil)
 		}

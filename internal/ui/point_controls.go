@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,17 +79,25 @@ func matchesPoint(r *device.ReadResult, filter string) bool {
 	}
 }
 
-var pointHeader = []string{"NodeID", "名称", "类型", "读写", "值", "质量 / 状态码", "执行状态 / 时间 / 错误"}
+var pointHeader = []string{"NodeID", "名称", "类型", "读写", "值", "质量 / 状态码", "时间", "执行状态 / 错误"}
+
+// pointWidths fit a 1280 pixels wide window beside the side column.
+var pointWidths = []float32{220, 110, 64, 46, 130, 150, 90, 220}
 
 var accessNames = map[string]string{"READ": "只读", "READ_WRITE": "读写", "WRITE": "只写", "NONE": "无权限"}
 
 func pointRow(r *device.ReadResult) []string {
 	detail := r.Execution
-	if !r.SourceTime.IsZero() {
-		detail += " · " + r.SourceTime.Local().Format("15:04:05.000")
-	}
 	if r.Error != "" {
 		detail += " · " + r.Error
+	}
+	// The source time, else the server's, else when the value was read.
+	stamp := ""
+	for _, t := range []time.Time{r.SourceTime, r.ServerTime, r.Time} {
+		if !t.IsZero() {
+			stamp = t.Local().Format("15:04:05.000")
+			break
+		}
 	}
 	kind, value := string(r.Kind()), device.FormatValue(r.Value)
 	if kind == "" {
@@ -99,7 +110,7 @@ func pointRow(r *device.ReadResult) []string {
 	if quality != "UNKNOWN" {
 		quality += fmt.Sprintf(" / 0x%08X", r.StatusCode)
 	}
-	return []string{r.Address.NodeID, r.DisplayName, kind, accessNames[r.Access], value, quality, detail}
+	return []string{r.Address.NodeID, r.DisplayName, kind, accessNames[r.Access], value, quality, stamp, detail}
 }
 
 // pointCell renders one visible cell on demand: formatting every row of a
@@ -123,9 +134,14 @@ func (d *Desktop) pointStyle(row, col int) widget.Importance {
 		if r.Writable() {
 			return widget.HighImportance
 		}
+	case 4:
+		// A value that changed recently, as polling shows it, stands out.
+		if t, ok := d.changedAt[r.Address.NodeID]; ok && time.Since(t) < changeHighlight {
+			return widget.HighImportance
+		}
 	case 5:
 		return qualityImportance(r.Quality)
-	case 6:
+	case 7:
 		if r.Execution == "NOT_READ" {
 			return widget.LowImportance
 		}
@@ -157,7 +173,7 @@ func (d *Desktop) refreshPointRows() {
 	q := d.query()
 	rr := d.snapshot.Results
 	// Results are copy-on-write, so an unchanged slice needs no new rows.
-	key := pointsKey{len(rr), q, nil}
+	key := pointsKey{len(rr), q, nil, d.sortCol, d.sortDesc}
 	if len(rr) > 0 {
 		key.first = &rr[0]
 	}
@@ -185,8 +201,17 @@ func (d *Desktop) refreshPointRows() {
 			d.visible = append(d.visible, i)
 		}
 	}
+	d.trackChanges(rr)
+	if d.sortCol >= 0 {
+		d.sortVisible()
+	}
 	d.table.UnselectAll()
 	d.table.Refresh()
+	if len(rr) == 0 {
+		d.emptyHint.Show()
+	} else {
+		d.emptyHint.Hide()
+	}
 	d.refreshTree()
 	d.refreshSingleOptions()
 	total := fmt.Sprintf("共 %d", len(rr))
@@ -211,9 +236,125 @@ func (d *Desktop) refreshPointRows() {
 }
 
 type pointsKey struct {
-	n     int
-	q     pointQuery
-	first *device.ReadResult
+	n        int
+	q        pointQuery
+	first    *device.ReadResult
+	sortCol  int
+	sortDesc bool
+}
+
+// changeHighlight is how long a changed value stays marked; values are
+// compared for lists up to changeTrackLimit points, as polled lists are.
+const (
+	changeHighlight  = 3 * time.Second
+	changeTrackLimit = 5000
+)
+
+// trackChanges notes the points whose value differs from the last results.
+func (d *Desktop) trackChanges(rr []device.ReadResult) {
+	if len(rr) > changeTrackLimit {
+		d.lastValues = nil
+		return
+	}
+	if d.changedAt == nil {
+		d.changedAt = map[string]time.Time{}
+	}
+	now := time.Now()
+	values := make(map[string]string, len(rr))
+	for i := range rr {
+		id, v := rr[i].Address.NodeID, device.FormatValue(rr[i].Value)
+		if old, ok := d.lastValues[id]; ok && old != v && rr[i].Value.Type != "" {
+			d.changedAt[id] = now
+		}
+		values[id] = v
+	}
+	d.lastValues = values
+	for id, t := range d.changedAt {
+		if now.Sub(t) > changeHighlight {
+			delete(d.changedAt, id)
+		}
+	}
+}
+
+// qualityRank sorts problems first: BAD, UNCERTAIN, UNKNOWN, then GOOD.
+var qualityRank = map[string]string{"BAD": "0", "UNCERTAIN": "1", "UNKNOWN": "2", "GOOD": "3"}
+
+// sortVisible orders the shown rows by the sort column: values that are
+// numbers by value and before text, quality by severity, the rest as text.
+func (d *Desktop) sortVisible() {
+	type key struct {
+		text   string
+		number float64
+		isNum  bool
+	}
+	keys := make(map[int]key, len(d.visible))
+	for _, i := range d.visible {
+		r := &d.snapshot.Results[i]
+		k := key{text: pointRow(r)[d.sortCol]}
+		switch d.sortCol {
+		case 4:
+			k.number, k.isNum = numericValue(r.Value)
+		case 5:
+			k.text = qualityRank[r.Quality] + k.text
+		}
+		keys[i] = k
+	}
+	slices.SortStableFunc(d.visible, func(a, b int) int {
+		x, y := keys[a], keys[b]
+		c := 0
+		switch {
+		case x.isNum && y.isNum:
+			c = cmp.Compare(x.number, y.number)
+		case x.isNum != y.isNum:
+			c = 1
+			if x.isNum {
+				c = -1
+			}
+		default:
+			c = strings.Compare(x.text, y.text)
+		}
+		if d.sortDesc {
+			return -c
+		}
+		return c
+	})
+}
+
+func numericValue(v device.Value) (float64, bool) {
+	switch {
+	case v.Elements != nil:
+		return 0, false
+	case v.Integer != "":
+		f, err := strconv.ParseFloat(v.Integer, 64)
+		return f, err == nil
+	case v.Type == "Float" || v.Type == "Double":
+		return v.Real, true
+	}
+	return 0, false
+}
+
+// sortBy cycles a column through ascending, descending and unsorted.
+func (d *Desktop) sortBy(col int) {
+	switch {
+	case d.sortCol != col:
+		d.sortCol, d.sortDesc = col, false
+	case !d.sortDesc:
+		d.sortDesc = true
+	default:
+		d.sortCol = -1
+	}
+	d.refreshPointRows()
+	d.table.Refresh()
+}
+
+func (d *Desktop) sortMark(col int) string {
+	switch {
+	case col != d.sortCol:
+		return ""
+	case d.sortDesc:
+		return " ▼"
+	}
+	return " ▲"
 }
 
 func (d *Desktop) copyPointRows() {

@@ -1,8 +1,8 @@
 # OPC UA AI Studio
 
-参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.5.0`。
+参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.6.0`。
 
-Windows 发行包见 [Gitee Release v0.5.0](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.5.0) 或 [GitHub Release v0.5.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.5.0)，更新说明见 [版本说明](docs/releases/v0.5.0.md)。
+Windows 发行包见 [Gitee Release v0.6.0](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.6.0) 或 [GitHub Release v0.6.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.6.0)，更新说明见 [版本说明](docs/releases/v0.6.0.md)。发布页提供三种下载：桌面程序单文件 `OPCUAAIStudio-<版本>-Windows-x64.exe`、命令行工具包 `opcua-tools-<版本>-Windows-x64.zip`（opcua-cli 与 opcua-sim），以及包含全部文件的 `OPCUAAIStudio-<版本>-Windows-x64.zip`（程序内更新使用）。
 
 ## Windows 桌面
 
@@ -17,12 +17,14 @@ Windows 发行包见 [Gitee Release v0.5.0](https://gitee.com/xiaolengwangwang/o
 5. 点击“全量读取”，演示父节点 `ns=2;i=85` 包含九个变量，其中三个为中文点位（如 `ns=2;s=热力站.一次供水温度`）；可停止并保留部分结果。
 6. 单点验证 `ns=2;s=Missing`，得到 BAD，同时保留其他 GOOD 点；筛选并导出 CSV。
 7. 节点浏览页勾选“选择”列可多选或全选节点，点击“读取选中节点”一起读取。
-8. “导出属性表”生成 viSCADA 设备类属性表（全部 / 仅 GOOD / 仅控制点位）；“导入属性表验证”按属性标识读取并筛选 GOOD、BAD、不存在、可写点。
-9. “连接数测试”逐个建立会话，测出服务器同时接受的会话数后全部关闭。
+8. “导出属性表”生成 viSCADA 设备类属性表（全部 / 仅 GOOD / 仅控制点位），填写属性标识、属性名称、读写模式和数据类型；“导入属性表验证”按属性标识读取并筛选 GOOD、BAD、不存在、可写点。
+9. 连接区“⋯”菜单中的“连接数测试”逐个建立会话，测出服务器同时接受的会话数后全部关闭。
 10. 筛选“含中文”只显示 NodeID 含中文的点位；“导出属性表”可选“仅含中文点位”。
 11. 结果区输入关键字模糊搜索（多个关键字空格分隔）或精确搜索，“导出 CSV”和“导出属性表”按当前筛选和搜索导出；“视图”切换树状，按浏览路径或 NodeID 层级查看数据。
 12. 单点验证输入 viSCADA 属性标识（如 `2::s::Counter::DINT`），查看属性标识校验和建议属性标识；读数正常后“设为基准点位”，此后每次连接自动检测。
 13. 节点浏览页“搜索节点”在父节点下按名称或 NodeID 查找节点，结果可勾选读取。
+14. 结果区点击表头排序，勾选“自动刷新”按间隔原位更新结果中的全部点位（刚变化的值以蓝色标出）；左上角折叠按钮收起左栏，让数据区占满窗口。
+15. “通讯与日志”页按全部 / 异常 / READ / WRITE / BROWSE 筛选、按 NodeID 搜索请求记录，选中一条查看全部目标和结果，统计响应耗时，可导出 CSV。
 
 单点验证使用独立输入，结果选择不覆盖批量清单。全量读取按 50,000 点设计（上限 60,000 个变量、100,000 个节点）：浏览一次请求多个节点，读取首批 100 点、响应快时加大到每批 5,000 点，单条消息控制在约 0.5 MB，服务器拒绝或超时自动减半，可随时停止。读取同时取得数据类型和读写权限，“读写”列和“可写（控制点位）”筛选标出控制点位。导入、导出和 CSV 在后台运行并显示进度，可随时取消；结果表按需渲染，50,000 点时仍可流畅查看。原始质量 GOOD/BAD/UNCERTAIN 与请求、解析、类型错误分别记录；未收到 DataValue 的质量为 UNKNOWN。CSV 保存冻结快照，包括范围、任务 ID 和完整性，兼容中文并保护 64 位标量整数。完整离线说明见 [操作手册](assets/help/points.md)，也可在程序中点击状态栏“操作手册”。
 
@@ -30,7 +32,7 @@ Windows 发行包见 [Gitee Release v0.5.0](https://gitee.com/xiaolengwangwang/o
 
 读取默认 Auto 自动识别类型；写入须明确选择数据类型。一行一个 NodeID，字符串标识保留大小写、空格和逗号，可以包含中文；中文输入法输入的全角 `＝`、`；`（如 `ns＝2；s＝热力站.温度`）自动转换为半角，标识本身保持不变。数组写入设置元素数量，并使用 JSON，例如 `[1,2,3]`。String 支持中文；ByteString 输入十六进制；DateTime 使用 RFC3339，例如 `2026-10-13T08:00:00Z`。
 
-默认只读，每次 GUI 写入都需要确认，并绑定当前连接；连接变化后旧确认失效。`UNKNOWN` 表示最终状态未知，不自动重发；服务端确认与读回一致分别显示。“断线自动重连”默认开启：服务器断开或连续 2 次无响应（心跳每 5 秒）时按 2–30 秒间隔重连，保留结果并恢复轮询；重连后须重新勾选“允许写入”。
+默认只读，每次 GUI 写入都需要确认，并绑定当前连接；连接变化后旧确认失效。`UNKNOWN` 表示最终状态未知，不自动重发；服务端确认与读回一致分别显示。Endpoint 可只填 IP 或主机名，连接时补全为 `opc.tcp://<主机>:4840`，下拉列表保存最近 10 个连接。“断线自动重连”默认开启：服务器断开或连续 2 次无响应（心跳每 5 秒）时按 2–30 秒间隔重连，保留结果并恢复轮询；重连后须重新勾选“允许写入”。
 
 连接输入和点位保存为独立首选项，密码、API Key、写入值和“允许写入”不保存。SQLite 记录位于 `%AppData%\OPCUAAIStudio\records`，按天 / 50 MB 轮转；正常关闭等待记录排空并释放演示端口。记录内容是服务级请求、结果、NodeID、状态码及时间戳，首版不记录原始线缆字节。应用日志位于 `%AppData%\OPCUAAIStudio\app.log`。
 

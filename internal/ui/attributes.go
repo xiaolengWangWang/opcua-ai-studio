@@ -96,14 +96,18 @@ func (d *Desktop) exportAttributesDialog() {
 	q := d.query()
 	shown := q.matcher()
 	searched := pointQuery{filter: "全部", search: q.search, exact: q.exact}.matcher()
-	count := func(keep func(*device.ReadResult) bool) int {
-		n := 0
+	// count reports the points an option holds and how many of them the
+	// platform cannot store, so the choice shows what will be skipped.
+	count := func(keep func(*device.ReadResult) bool) (n, skip int) {
 		for i := range snapshot.Results {
-			if keep(&snapshot.Results[i]) {
+			if r := &snapshot.Results[i]; keep(r) {
 				n++
+				if _, err := viscada.FromResult(*r); err != nil {
+					skip++
+				}
 			}
 		}
-		return n
+		return n, skip
 	}
 	var box dialog.Dialog
 	choice := func(label, tag string, keep func(*device.ReadResult) bool) *widget.Button {
@@ -111,17 +115,21 @@ func (d *Desktop) exportAttributesDialog() {
 			only := keep
 			keep = func(r *device.ReadResult) bool { return searched(r) && only(r) }
 		}
-		n := count(keep)
-		b := widget.NewButton(fmt.Sprintf("%s（%d 个）", label, n), func() {
+		n, skip := count(keep)
+		text := fmt.Sprintf("%s（%d 个）", label, n)
+		if skip > 0 {
+			text = fmt.Sprintf("%s（%d 个，跳过 %d 个）", label, n, skip)
+		}
+		b := widget.NewButton(text, func() {
 			box.Hide()
 			d.exportAttributes(snapshot, label, tag, keep, n)
 		})
-		if n == 0 {
+		if n == skip {
 			b.Disable()
 		}
 		return b
 	}
-	note := "导出 viSCADA 设备类属性表：填写属性标识和读写模式，其他列留空。\n数组和平台不支持的类型（如 DateTime）会跳过并在完成后列出。"
+	note := "导出 viSCADA 设备类属性表：填写属性标识、属性名称（显示名称）、读写模式和数据类型，其他列留空。\n数组和平台不支持的类型（如 DateTime）会跳过，完成后列出原因。"
 	if q.search != "" {
 		note += fmt.Sprintf("\n当前搜索“%s”，以下各项只包含搜索到的点位。", q.search)
 	}

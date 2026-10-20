@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -111,7 +112,7 @@ func (d *Desktop) useEndpoint(e opcua.Endpoint) {
 	d.policy.SetSelected(e.Policy)
 	d.mode.SetSelected(e.Mode)
 	if e.Policy != "None" {
-		d.security.Open(0)
+		d.showSecurity(true)
 	}
 }
 
@@ -135,47 +136,36 @@ func (d *Desktop) endpointsDialog(ee []opcua.Endpoint) {
 }
 
 // serverSearchDialog finds OPC UA servers on this computer and the local
-// networks; choosing one fills its Endpoint and the least secure endpoint's
-// policy, which anonymous demo and test servers accept.
+// networks. Servers show up while the scan goes on; 填入 fills the Endpoint
+// and the least secure endpoint's policy, which anonymous demo and test
+// servers accept, and 连接 also connects. The last hosts and ports are kept.
 func (d *Desktop) serverSearchDialog() {
 	timeout, err := time.ParseDuration(d.timeout.Text)
 	if err != nil {
 		d.showError(errors.New("超时须为 5s、500ms 等格式"))
 		return
 	}
+	prefs := d.app.Preferences()
 	hosts := widget.NewMultiLineEntry()
 	hosts.SetMinRowsVisible(2)
 	hosts.Wrapping = fyne.TextWrapWord
-	hosts.SetText(strings.Join(opcua.LocalNetworks(), ", "))
+	hosts.SetText(prefs.StringWithFallback("scan-hosts", strings.Join(opcua.LocalNetworks(), ", ")))
 	ports := widget.NewEntry()
-	ports.SetText(opcua.DefaultPorts)
+	ports.SetText(prefs.StringWithFallback("scan-ports", opcua.DefaultPorts))
+	reset := widget.NewButtonWithIcon("恢复默认", theme.HistoryIcon(), func() {
+		hosts.SetText(strings.Join(opcua.LocalNetworks(), ", "))
+		ports.SetText(opcua.DefaultPorts)
+	})
 	status := widget.NewLabel("填写主机、IP、网段（如 192.168.1.0/24）或范围（如 192.168.1.10-50），逗号分隔。")
 	status.Wrapping = fyne.TextWrapWord
 	bar := widget.NewProgressBar()
 	bar.Hide()
 	var found []opcua.Found
 	var box dialog.Dialog
-	list := widget.NewList(func() int { return len(found) }, func() fyne.CanvasObject {
-		name := widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-		detail := widget.NewLabel("")
-		detail.Importance = widget.LowImportance
-		return container.NewVBox(name, detail)
-	}, func(i widget.ListItemID, o fyne.CanvasObject) {
-		f, labels := found[i], o.(*fyne.Container).Objects
-		labels[0].(*widget.Label).SetText(fmt.Sprintf("%s  %s", or(f.Name, "OPC UA 服务器"), f.URL))
-		var modes []string
-		for _, e := range f.Endpoints {
-			if m := e.Policy + "/" + e.Mode; !slices.Contains(modes, m) {
-				modes = append(modes, m)
-			}
+	use := func(i int, connect bool) {
+		if i < 0 || i >= len(found) {
+			return
 		}
-		detail := fmt.Sprintf("%d 个端点：%s", len(f.Endpoints), strings.Join(modes, "、"))
-		if f.Error != "" {
-			detail = "已在发现服务器登记，但无法读取端点：" + f.Error
-		}
-		labels[1].(*widget.Label).SetText(detail)
-	})
-	list.OnSelected = func(i widget.ListItemID) {
 		f := found[i]
 		d.target.SetText(f.URL)
 		d.profile.ClearSelected()
@@ -190,7 +180,44 @@ func (d *Desktop) serverSearchDialog() {
 			d.useEndpoint(best)
 		}
 		box.Hide()
+		if connect {
+			d.connectBtn.OnTapped()
+		}
 	}
+	list := widget.NewList(func() int { return len(found) }, func() fyne.CanvasObject {
+		name := widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+		detail := widget.NewLabel("")
+		detail.Importance = widget.LowImportance
+		detail.Truncation = fyne.TextTruncateEllipsis
+		fill := widget.NewButton("填入", nil)
+		connect := widget.NewButtonWithIcon("连接", theme.LoginIcon(), nil)
+		connect.Importance = widget.HighImportance
+		return container.NewBorder(nil, nil, nil, container.NewHBox(fill, connect), container.NewVBox(name, detail))
+	}, func(i widget.ListItemID, o fyne.CanvasObject) {
+		f, row := found[i], o.(*fyne.Container)
+		texts := row.Objects[0].(*fyne.Container).Objects
+		buttons := row.Objects[1].(*fyne.Container).Objects
+		texts[0].(*widget.Label).SetText(fmt.Sprintf("%s  %s", or(f.Name, "OPC UA 服务器"), f.URL))
+		var modes, auth []string
+		for _, e := range f.Endpoints {
+			if m := e.Policy + "/" + e.Mode; !slices.Contains(modes, m) {
+				modes = append(modes, m)
+			}
+			for _, a := range e.Authentication {
+				if !slices.Contains(auth, a) {
+					auth = append(auth, a)
+				}
+			}
+		}
+		detail := fmt.Sprintf("%d 个端点：%s · 认证 %s", len(f.Endpoints), strings.Join(modes, "、"), strings.Join(auth, "、"))
+		if f.Error != "" {
+			detail = "已在发现服务器登记，但无法读取端点：" + f.Error
+		}
+		texts[1].(*widget.Label).SetText(detail)
+		buttons[0].(*widget.Button).OnTapped = func() { use(i, false) }
+		buttons[1].(*widget.Button).OnTapped = func() { use(i, true) }
+	})
+	list.OnSelected = func(i widget.ListItemID) { use(i, false) }
 	var cancel context.CancelFunc
 	var search *widget.Button
 	search = widget.NewButtonWithIcon("开始搜索", theme.SearchIcon(), func() {
@@ -202,7 +229,16 @@ func (d *Desktop) serverSearchDialog() {
 		if err == nil {
 			var pp []int
 			if pp, err = opcua.ParsePorts(ports.Text); err == nil {
-				d.startServerSearch(hh, pp, timeout, &cancel, search, bar, status, func(ff []opcua.Found) { found = ff; list.Refresh() })
+				prefs.SetString("scan-hosts", hosts.Text)
+				prefs.SetString("scan-ports", ports.Text)
+				found = nil
+				list.Refresh()
+				d.startServerSearch(hh, pp, timeout, &cancel, search, bar, status, func(f opcua.Found) {
+					// Keep the list in address order while servers arrive.
+					at, _ := slices.BinarySearchFunc(found, f, func(a, b opcua.Found) int { return opcua.CompareURL(a.URL, b.URL) })
+					found = slices.Insert(found, at, f)
+					list.Refresh()
+				})
 				return
 			}
 		}
@@ -210,19 +246,20 @@ func (d *Desktop) serverSearchDialog() {
 	})
 	search.Importance = widget.HighImportance
 	form := widget.NewForm(widget.NewFormItem("主机 / 网段", hosts), widget.NewFormItem("端口", ports))
-	top := container.NewVBox(form, container.NewBorder(nil, nil, nil, search, bar), status)
+	top := container.NewVBox(form, container.NewBorder(nil, nil, nil, container.NewHBox(reset, search), bar), status)
 	box = dialog.NewCustom("搜索 OPC UA 服务器", "关闭", container.NewBorder(top, nil, nil, nil, list), d.win)
 	box.SetOnClosed(func() {
 		if cancel != nil {
 			cancel()
 		}
 	})
-	box.Resize(fyne.NewSize(860, 560))
+	box.Resize(fyne.NewSize(900, 580))
 	box.Show()
 }
 
-// startServerSearch runs one discovery; the button stops it while it runs.
-func (d *Desktop) startServerSearch(hosts []string, ports []int, timeout time.Duration, cancel *context.CancelFunc, button *widget.Button, bar *widget.ProgressBar, status *widget.Label, done func([]opcua.Found)) {
+// startServerSearch runs one discovery, showing each server as it is found;
+// the button stops it while it runs.
+func (d *Desktop) startServerSearch(hosts []string, ports []int, timeout time.Duration, cancel *context.CancelFunc, button *widget.Button, bar *widget.ProgressBar, status *widget.Label, add func(opcua.Found)) {
 	d.mu.Lock()
 	if d.stopped {
 		d.mu.Unlock()
@@ -239,6 +276,7 @@ func (d *Desktop) startServerSearch(hosts []string, ports []int, timeout time.Du
 	total := len(hosts) * len(ports)
 	status.SetText(fmt.Sprintf("正在搜索 %d 台主机的 %d 个端口……", len(hosts), len(ports)))
 	var last time.Time
+	count := 0
 	go func() {
 		defer d.workers.Done()
 		started := time.Now()
@@ -247,7 +285,15 @@ func (d *Desktop) startServerSearch(hosts []string, ports []int, timeout time.Du
 				return
 			}
 			last = time.Now()
-			fyne.Do(func() { bar.SetValue(float64(n) / float64(total)) })
+			fyne.Do(func() {
+				bar.SetValue(float64(n) / float64(total))
+				status.SetText(fmt.Sprintf("已扫描 %d / %d 个地址，找到 %d 个服务器……", n, total, count))
+			})
+		}, func(f opcua.Found) {
+			fyne.Do(func() {
+				count++
+				add(f)
+			})
 		})
 		stop()
 		fyne.Do(func() {
@@ -257,15 +303,45 @@ func (d *Desktop) startServerSearch(hosts []string, ports []int, timeout time.Du
 			bar.Hide()
 			switch {
 			case errors.Is(err, context.Canceled):
-				status.SetText("已停止搜索。")
+				status.SetText(fmt.Sprintf("已停止搜索，找到 %d 个服务器。", count))
 			case err != nil:
 				status.SetText(err.Error())
 			default:
-				status.SetText(fmt.Sprintf("找到 %d 个 OPC UA 服务器（%d 个地址，用时 %.1f 秒）。点选一个即可填入 Endpoint 和安全策略。", len(ff), total, time.Since(started).Seconds()))
-				done(ff)
+				status.SetText(fmt.Sprintf("找到 %d 个 OPC UA 服务器（%d 个地址，用时 %.1f 秒）。点“连接”直接连接，点“填入”只填入 Endpoint 和安全策略。", len(ff), total, time.Since(started).Seconds()))
 			}
 		})
 	}()
+}
+
+// normalizeEndpoint completes a typed address: opc.tcp:// when the scheme is
+// missing and port 4840 when the port is, without surrounding spaces.
+func normalizeEndpoint(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	if !strings.Contains(s, "://") {
+		s = "opc.tcp://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "opc.tcp" || u.Hostname() == "" || u.Port() != "" {
+		return s
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), "4840")
+	return u.String()
+}
+
+// endpointHistory lists the endpoints connected most recently, newest first.
+func (d *Desktop) endpointHistory() []string {
+	return strings.FieldsFunc(d.app.Preferences().String("endpoint-history"), func(r rune) bool { return r == '\n' })
+}
+
+// rememberEndpoint puts a connected endpoint first in the history of ten.
+func (d *Desktop) rememberEndpoint(target string) {
+	list := append([]string{target}, slices.DeleteFunc(d.endpointHistory(), func(s string) bool { return s == target })...)
+	list = list[:min(len(list), 10)]
+	d.app.Preferences().SetString("endpoint-history", strings.Join(list, "\n"))
+	d.target.SetOptions(list)
 }
 
 // serverInfoText formats the connected server's information for reading and copying.

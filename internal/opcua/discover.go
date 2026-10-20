@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,8 +25,9 @@ const DefaultPorts = "4840, 4841, 4862, 4890, 48010, 49320, 53530, 62541"
 const (
 	maxScanHosts   = 4096
 	maxScanTargets = 40000
-	scanWorkers    = 256
-	probeWorkers   = 16
+	scanWorkers    = 512
+	probeWorkers   = 32
+	connectTimeout = 500 * time.Millisecond
 )
 
 // Found is an OPC UA server found by Discover.
@@ -164,35 +166,84 @@ func ParsePorts(text string) ([]int, error) {
 }
 
 // Discover searches hosts for OPC UA servers: it connects to every port,
-// asks each open port for its endpoints, and asks each server found for the
-// servers registered with it, as a local discovery server lists them.
-// progress reports the addresses tried out of the total.
-func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Duration, progress func(done, total int)) ([]Found, error) {
+// asks each open port for its endpoints while the scan goes on, and asks each
+// server found for the servers registered with it, as a local discovery
+// server lists them. progress reports the addresses tried out of the total;
+// found receives each server as soon as it is known.
+func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Duration, progress func(done, total int), found func(Found)) ([]Found, error) {
 	if len(hosts)*len(ports) > maxScanTargets {
 		return nil, fmt.Errorf("主机数 × 端口数超过 %d，请缩小网段或减少端口", maxScanTargets)
 	}
 	if timeout <= 0 {
 		return nil, fmt.Errorf("超时须大于零")
 	}
-	// A closed or filtered port should not hold a worker for the full timeout.
-	connect := min(timeout, 700*time.Millisecond)
-	targets := make(chan string)
+	// A closed or filtered port should not hold a worker for the full timeout;
+	// a LAN host answers a connect within milliseconds.
+	connect := min(timeout, connectTimeout)
 	var mu sync.Mutex
-	var open []string
+	var servers []Found
+	seen := map[string]bool{}
 	done, total := 0, len(hosts)*len(ports)
-	var wg sync.WaitGroup
+	// Every scanned address is kept: PLCs of one model often share an
+	// application URI. A registered server is dropped when its URI was
+	// found already, as a discovery server lists itself under its host name.
+	publish := func(f Found, registered bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if registered && f.URI != "" && slices.ContainsFunc(servers, func(g Found) bool { return g.URI == f.URI }) {
+			return
+		}
+		servers = append(servers, f)
+		if found != nil {
+			found(f)
+		}
+	}
+	// Endpoints are read while the scan goes on, so servers show up at once.
+	opened := make(chan string, scanWorkers)
+	var registered []string
+	var probes sync.WaitGroup
+	for range probeWorkers {
+		probes.Go(func() {
+			for u := range opened {
+				f := describe(ctx, u, timeout)
+				if f.Error != "" {
+					continue
+				}
+				publish(f, false)
+				// Servers registered with a discovery server may listen elsewhere.
+				apps, err := findServers(ctx, u, timeout)
+				if err != nil {
+					continue
+				}
+				mu.Lock()
+				for _, app := range apps {
+					for _, d := range app.DiscoveryURLs {
+						if ValidateEndpoint(d) == nil && !seen[d] {
+							seen[d] = true
+							registered = append(registered, d)
+						}
+					}
+				}
+				mu.Unlock()
+			}
+		})
+	}
+	targets := make(chan string)
+	var scans sync.WaitGroup
 	for range min(scanWorkers, total) {
-		wg.Go(func() {
+		scans.Go(func() {
 			dialer := net.Dialer{Timeout: connect}
 			for addr := range targets {
 				conn, err := dialer.DialContext(ctx, "tcp", addr)
 				if err == nil {
 					conn.Close()
+					u := "opc.tcp://" + addr
+					mu.Lock()
+					seen[u] = true
+					mu.Unlock()
+					opened <- u
 				}
 				mu.Lock()
-				if err == nil {
-					open = append(open, addr)
-				}
 				done++
 				if progress != nil {
 					progress(done, total)
@@ -201,9 +252,10 @@ func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Dur
 			}
 		})
 	}
+	// Port by port, so the usual 4840 servers on every host come first.
 feed:
-	for _, h := range hosts {
-		for _, p := range ports {
+	for _, p := range ports {
+		for _, h := range hosts {
 			select {
 			case targets <- net.JoinHostPort(h, strconv.Itoa(p)):
 			case <-ctx.Done():
@@ -212,63 +264,64 @@ feed:
 		}
 	}
 	close(targets)
-	wg.Wait()
+	scans.Wait()
+	close(opened)
+	probes.Wait()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var found []Found
-	seen := map[string]bool{}
-	probe := func(urls []string, registered bool) {
-		jobs := make(chan string)
-		var wg sync.WaitGroup
-		for range min(probeWorkers, len(urls)) {
-			wg.Go(func() {
-				for u := range jobs {
-					f := describe(ctx, u, timeout)
-					mu.Lock()
-					// A discovery server also lists itself, under its host name.
-					known := registered && f.URI != "" && slices.ContainsFunc(found, func(g Found) bool { return g.URI == f.URI })
-					if (f.Error == "" || registered) && !known {
-						found = append(found, f)
-					}
-					mu.Unlock()
-				}
-			})
-		}
-		for _, u := range urls {
-			jobs <- u
-		}
-		close(jobs)
-		wg.Wait()
-	}
-	var urls []string
-	for _, addr := range open {
-		urls = append(urls, "opc.tcp://"+addr)
-		seen["opc.tcp://"+addr] = true
-	}
-	probe(urls, false)
-	// Servers registered with a discovery server may listen on other ports.
-	var registered []string
-	for _, f := range slices.Clone(found) {
-		apps, err := findServers(ctx, f.URL, timeout)
-		if err != nil {
-			continue
-		}
-		for _, app := range apps {
-			for _, u := range app.DiscoveryURLs {
-				if ValidateEndpoint(u) == nil && !seen[u] {
-					seen[u] = true
-					registered = append(registered, u)
-				}
+	// Registered servers are listed even when their endpoints cannot be read.
+	jobs := make(chan string)
+	var late sync.WaitGroup
+	for range min(probeWorkers, len(registered)) {
+		late.Go(func() {
+			for u := range jobs {
+				publish(describe(ctx, u, timeout), true)
 			}
-		}
+		})
 	}
-	probe(registered, true)
+	for _, u := range registered {
+		jobs <- u
+	}
+	close(jobs)
+	late.Wait()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	slices.SortFunc(found, func(a, b Found) int { return strings.Compare(a.URL, b.URL) })
-	return found, nil
+	slices.SortFunc(servers, func(a, b Found) int { return CompareURL(a.URL, b.URL) })
+	return servers, nil
+}
+
+// CompareURL orders endpoints by IP address and port numerically, so
+// 192.168.1.9 comes before 192.168.1.10; host names follow addresses.
+func CompareURL(a, b string) int {
+	key := func(s string) (netip.Addr, int, string) {
+		u, err := url.Parse(s)
+		if err != nil {
+			return netip.Addr{}, 0, s
+		}
+		port, _ := strconv.Atoi(u.Port())
+		ip, _ := netip.ParseAddr(u.Hostname())
+		return ip, port, u.Hostname()
+	}
+	ipA, portA, hostA := key(a)
+	ipB, portB, hostB := key(b)
+	switch {
+	case ipA.IsValid() != ipB.IsValid():
+		if ipA.IsValid() {
+			return -1
+		}
+		return 1
+	case ipA != ipB:
+		if ipA.IsValid() {
+			return ipA.Compare(ipB)
+		}
+		return strings.Compare(hostA, hostB)
+	}
+	if c := strings.Compare(hostA, hostB); c != 0 {
+		return c
+	}
+	return portA - portB
 }
 
 func findServers(ctx context.Context, target string, timeout time.Duration) ([]*ua.ApplicationDescription, error) {

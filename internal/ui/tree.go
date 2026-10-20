@@ -18,6 +18,7 @@ type pointTree struct {
 	rows     map[widget.TreeNodeID]int    // leaf → result index
 	names    map[widget.TreeNodeID]string // node → label
 	points   map[widget.TreeNodeID]int    // branch → points below it
+	bad      map[widget.TreeNodeID]int    // branch → BAD points below it, so problem folders stand out
 }
 
 // treePath places a point: below its browse path when a full read recorded
@@ -46,7 +47,7 @@ func treePath(r *device.ReadResult) (path []string, name string) {
 }
 
 func buildTree(results []device.ReadResult, visible []int) pointTree {
-	t := pointTree{children: map[string][]string{}, rows: make(map[string]int, len(visible)), names: make(map[string]string, len(visible)), points: map[string]int{}}
+	t := pointTree{children: map[string][]string{}, rows: make(map[string]int, len(visible)), names: make(map[string]string, len(visible)), points: map[string]int{}, bad: map[string]int{}}
 	for _, i := range visible {
 		path, name := treePath(&results[i])
 		parent := ""
@@ -57,6 +58,9 @@ func buildTree(results []device.ReadResult, visible []int) pointTree {
 				t.children[parent] = append(t.children[parent], id)
 			}
 			t.points[id]++
+			if results[i].Quality == "BAD" {
+				t.bad[id]++
+			}
 			parent = id
 		}
 		leaf := "#" + strconv.Itoa(i)
@@ -67,17 +71,48 @@ func buildTree(results []device.ReadResult, visible []int) pointTree {
 	return t
 }
 
-// newPointTree shows each branch with its point count and each point with
-// its value colored by quality, then type, access, quality and NodeID.
+// treeColumns lays a tree row out like the table: name and value at fixed
+// widths, the detail taking the rest, so values line up down a folder.
+type treeColumns []float32
+
+func (c treeColumns) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	x := float32(0)
+	for i, o := range objects {
+		w := size.Width - x
+		if i < len(c) {
+			w = min(c[i], w)
+		}
+		o.Move(fyne.NewPos(x, 0))
+		o.Resize(fyne.NewSize(max(w, 0), size.Height))
+		x += w
+	}
+}
+
+func (c treeColumns) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	h := float32(0)
+	for _, o := range objects {
+		h = max(h, o.MinSize().Height)
+	}
+	w := float32(0)
+	for _, cw := range c {
+		w += cw
+	}
+	return fyne.NewSize(w, h)
+}
+
+// newPointTree shows each branch with its point and BAD counts and each point
+// with its value colored by quality, then type, access, quality and NodeID.
 func (d *Desktop) newPointTree() *widget.Tree {
 	t := widget.NewTree(
 		func(id widget.TreeNodeID) []widget.TreeNodeID { return d.treeIndex.children[id] },
 		func(id widget.TreeNodeID) bool { _, leaf := d.treeIndex.rows[id]; return !leaf },
 		func(bool) fyne.CanvasObject {
 			name := widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-			detail := widget.NewLabel("")
-			detail.Importance = widget.LowImportance
-			return container.NewHBox(name, widget.NewLabel(""), detail)
+			value, detail := widget.NewLabel(""), widget.NewLabel("")
+			for _, l := range []*widget.Label{name, value, detail} {
+				l.Truncation = fyne.TextTruncateEllipsis
+			}
+			return container.New(treeColumns{240, 170}, name, value, detail)
 		},
 		func(id widget.TreeNodeID, branch bool, o fyne.CanvasObject) {
 			labels := o.(*fyne.Container).Objects
@@ -86,9 +121,14 @@ func (d *Desktop) newPointTree() *widget.Tree {
 			if branch {
 				value.Importance = widget.LowImportance
 				value.SetText(fmt.Sprintf("%d 个点", d.treeIndex.points[id]))
+				detail.Importance = widget.DangerImportance
 				detail.SetText("")
+				if n := d.treeIndex.bad[id]; n > 0 {
+					detail.SetText(fmt.Sprintf("BAD %d", n))
+				}
 				return
 			}
+			detail.Importance = widget.LowImportance
 			i, ok := d.treeIndex.rows[id]
 			if !ok || i >= len(d.snapshot.Results) {
 				return
@@ -128,12 +168,18 @@ func (d *Desktop) refreshTree() {
 		return
 	}
 	fresh := len(d.treeIndex.rows) == 0
+	searched := d.treeSearch != d.search.Text
+	d.treeSearch = d.search.Text
 	d.treeIndex = buildTree(d.snapshot.Results, d.visible)
 	// Leaf IDs index the results, which a new list replaces.
 	d.tree.UnselectAll()
+	switch {
+	// A new search opens every folder holding a match, while they are few.
+	case searched && d.search.Text != "" && len(d.visible) <= 500:
+		d.tree.OpenAllBranches()
 	// Open the top level of a small new tree, so a demo or a short list shows
 	// its points; later refreshes keep what the user opened or closed.
-	if fresh && len(d.visible) <= 200 {
+	case fresh && len(d.visible) <= 200:
 		for _, id := range d.treeIndex.children[""] {
 			d.tree.OpenBranch(id)
 		}

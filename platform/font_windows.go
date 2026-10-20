@@ -31,8 +31,14 @@ func (t windowsTheme) Font(style fyne.TextStyle) fyne.Resource {
 	return t.regular
 }
 
+// Size follows Windows desktop density rather than Fyne's touch-sized
+// spacing, so the two-pane layout fits a 1366 × 768 laptop.
 func (t windowsTheme) Size(name fyne.ThemeSizeName) float32 {
 	switch name {
+	case theme.SizeNamePadding:
+		return 4
+	case theme.SizeNameInnerPadding:
+		return 6
 	case theme.SizeNameText:
 		return 13
 	case theme.SizeNameHeadingText:

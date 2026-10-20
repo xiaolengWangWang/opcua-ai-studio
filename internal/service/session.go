@@ -21,6 +21,7 @@ const (
 type pollSpec struct {
 	points   []Point
 	interval time.Duration
+	kind     readKind
 }
 
 // watch notices a connection lost between operations: the driver closes when
@@ -70,7 +71,7 @@ func (c *Controller) lost(s *session, e error) {
 	if c.s == s && !c.closed && c.snap.State == "connected" {
 		var poll *pollSpec
 		if c.snap.Polling {
-			poll = &pollSpec{c.poll.points, c.poll.interval}
+			poll = &pollSpec{c.poll.points, c.poll.interval, c.poll.kind}
 		}
 		c.snap.State = "error"
 		c.snap.LastError = e.Error()
@@ -108,7 +109,7 @@ func (c *Controller) reconnect(cfg Config, gen uint64, poll *pollSpec) {
 		switch {
 		case err == nil:
 			if poll != nil {
-				c.StartPolling(c.life, poll.points, poll.interval)
+				c.startPoll(c.life, poll.points, poll.interval, poll.kind)
 			}
 			return
 		case errors.Is(err, context.Canceled):

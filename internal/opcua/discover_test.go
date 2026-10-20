@@ -3,6 +3,7 @@ package opcua_test
 import (
 	"context"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -65,8 +66,8 @@ func TestDiscoverFindsTheDemoServer(t *testing.T) {
 	}()
 	p, _ := strconv.Atoi(port)
 	q := other.Addr().(*net.TCPAddr).Port
-	calls, started := 0, time.Now()
-	found, err := opcua.Discover(ctx, []string{"127.0.0.1"}, []int{p, q}, 3*time.Second, func(done, total int) { calls++ })
+	calls, streamed, started := 0, 0, time.Now()
+	found, err := opcua.Discover(ctx, []string{"127.0.0.1"}, []int{p, q}, 3*time.Second, func(done, total int) { calls++ }, func(opcua.Found) { streamed++ })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,12 +75,20 @@ func TestDiscoverFindsTheDemoServer(t *testing.T) {
 	if len(found) != 1 || found[0].URL != srv.Endpoint || found[0].Name == "" || len(found[0].Endpoints) == 0 || found[0].Endpoints[0].Policy != "None" {
 		t.Fatalf("found: %+v", found)
 	}
-	if calls != 2 {
-		t.Fatalf("progress reported %d times", calls)
+	if calls != 2 || streamed != 1 {
+		t.Fatalf("progress reported %d times, %d servers streamed", calls, streamed)
 	}
 	cancelled, stop := context.WithCancel(ctx)
 	stop()
-	if _, err := opcua.Discover(cancelled, []string{"127.0.0.1"}, []int{p}, time.Second, nil); err == nil {
+	if _, err := opcua.Discover(cancelled, []string{"127.0.0.1"}, []int{p}, time.Second, nil, nil); err == nil {
 		t.Fatal("cancelled search returned results")
+	}
+}
+
+func TestDiscoveryResultsSortByAddress(t *testing.T) {
+	urls := []string{"opc.tcp://plc-02:4840", "opc.tcp://192.168.1.10:4840", "opc.tcp://192.168.1.9:49320", "opc.tcp://192.168.1.9:4840"}
+	slices.SortFunc(urls, opcua.CompareURL)
+	if want := "opc.tcp://192.168.1.9:4840,opc.tcp://192.168.1.9:49320,opc.tcp://192.168.1.10:4840,opc.tcp://plc-02:4840"; strings.Join(urls, ",") != want {
+		t.Fatalf("%v", urls)
 	}
 }
