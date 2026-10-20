@@ -38,7 +38,6 @@ func (d *Desktop) diagnosticsPanel() fyne.CanvasObject {
 	d.packetSearch.SetPlaceHolder("按 NodeID 或错误搜索")
 	d.packetSearch.OnChanged = refresh
 	d.packetStats = widget.NewLabel("")
-	d.packetStats.Importance = widget.LowImportance
 	d.packetDetail = widget.NewLabel("点击一条记录，查看其全部目标和结果。")
 	d.packetDetail.Selectable = true
 	d.packetDetail.Wrapping = fyne.TextWrapWord
