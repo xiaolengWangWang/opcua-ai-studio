@@ -209,8 +209,9 @@ func TestTrendViewKeepsHistoryPerPoint(t *testing.T) {
 	}
 	// Another range starts over from the record database, read for the
 	// charts as they show.
+	gen := d.trendGen
 	d.trendRange.SetSelected("1 小时")
-	if len(d.trend) != 0 || d.trendLoaded["ns=3;i=1007"] {
+	if len(d.trend) != 0 || d.trendGen == gen {
 		t.Fatalf("range change kept %d charts", len(d.trend))
 	}
 	d.wantTrend("ns=3;i=1007")
