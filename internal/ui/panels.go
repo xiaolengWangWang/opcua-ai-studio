@@ -366,7 +366,12 @@ func (d *Desktop) diagnosticsPanel() fyne.CanvasObject {
 // newTextTable renders cells on demand, so only the visible rows are formatted,
 // under a header row that stays in view while the rows scroll.
 func newTextTable(rows func() int, header []string, cell func(row, col int) string, style func(row, col int) widget.Importance, widths []float32) *widget.Table {
-	t := widget.NewTable(func() (int, int) { return rows(), len(widths) }, func() fyne.CanvasObject { return widget.NewLabel("") }, func(id widget.TableCellID, o fyne.CanvasObject) {
+	t := widget.NewTable(func() (int, int) { return rows(), len(widths) }, func() fyne.CanvasObject {
+		// Long values such as Chinese text would otherwise run over the next column.
+		l := widget.NewLabel("")
+		l.Truncation = fyne.TextTruncateEllipsis
+		return l
+	}, func(id widget.TableCellID, o fyne.CanvasObject) {
 		l := o.(*widget.Label)
 		l.Importance = style(id.Row, id.Col)
 		l.SetText(cell(id.Row, id.Col))
