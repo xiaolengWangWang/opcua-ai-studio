@@ -204,3 +204,14 @@ func TestWriteButtonFollowsTheChosenPoint(t *testing.T) {
 		t.Fatal("read-only point offered for writing")
 	}
 }
+
+func TestWindowTitleNamesTheServer(t *testing.T) {
+	d := searchDesktop(t)
+	if got := d.win.Title(); got != "OPC UA AI Studio test · 127.0.0.1:4840" {
+		t.Fatalf("title %q", got)
+	}
+	d.refresh(service.Snapshot{Revision: 500, State: "disconnected"})
+	if got := d.win.Title(); got != "OPC UA AI Studio test" {
+		t.Fatalf("title %q", got)
+	}
+}

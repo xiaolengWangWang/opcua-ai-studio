@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -33,6 +35,8 @@ func (d *Desktop) buildMenu() {
 	quit := action("退出", d.quit)
 	quit.IsQuit = true
 	file := fyne.NewMenu("文件",
+		action("新建窗口", d.newWindow),
+		fyne.NewMenuItemSeparator(),
 		button("导入 viSCADA 属性表验证…", d.importBtn),
 		button("导出 CSV…", d.exportCSVBtn),
 		button("导出 viSCADA 属性表…", d.exportAttrBtn),
@@ -126,6 +130,22 @@ func (d *Desktop) updateMenu() {
 	if s := state.String(); s != d.menuState {
 		d.menuState = s
 		d.mainMenu.Refresh()
+	}
+}
+
+// newWindow starts another copy of the program, so several servers can be
+// watched at once; each copy has its own connection, results and settings
+// dialog, and all share the record archive and saved connections.
+func (d *Desktop) newWindow() {
+	exe, err := os.Executable()
+	if err == nil {
+		cmd := exec.Command(exe)
+		if err = cmd.Start(); err == nil {
+			cmd.Process.Release()
+		}
+	}
+	if err != nil {
+		d.showError(fmt.Errorf("无法打开新窗口：%w", err))
 	}
 }
 

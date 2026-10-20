@@ -111,6 +111,22 @@ func TestInstallReplacesFilesAndRollsBack(t *testing.T) {
 	if _, err := os.Stat(exe + ".old"); err == nil {
 		t.Fatal("old exe not cleaned up")
 	}
+	// A previous copy another window still runs cannot be removed: here a
+	// directory stands for it. The update moves it aside instead of failing.
+	if err := os.MkdirAll(filepath.Join(exe+".old", "in-use"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Install(path, exe); err != nil {
+		t.Fatalf("update with the previous copy in use: %v", err)
+	}
+	if aside, _ := filepath.Glob(exe + ".old-*"); len(aside) != 1 {
+		t.Fatalf("previous copy not moved aside: %v", aside)
+	}
+	os.WriteFile(exe+".old-1", nil, 0o644)
+	Cleanup(exe)
+	if left, _ := filepath.Glob(exe + ".old-1"); len(left) != 0 {
+		t.Fatal("a freed previous copy was not cleaned up")
+	}
 	broken := filepath.Join(dir, "broken.zip")
 	os.WriteFile(broken, pack(t, map[string]string{"OPCUAAIStudio.exe": "half"}), 0o644)
 	if err := Install(broken, exe); err == nil {

@@ -370,6 +370,14 @@ func (d *Desktop) refresh(s service.Snapshot) {
 		state += " · " + strings.TrimSpace(s.Server.Product+" "+s.Server.Version)
 	}
 	d.status.SetText(state)
+	// With several windows open, the title tells them apart on the taskbar.
+	title := "OPC UA AI Studio " + d.version
+	if s.State == "connected" || s.State == "reconnecting" {
+		title += " · " + strings.TrimPrefix(s.Target, "opc.tcp://")
+	}
+	if title != d.win.Title() {
+		d.win.SetTitle(title)
+	}
 	d.status.Importance = widget.MediumImportance
 	switch s.State {
 	case "connected":

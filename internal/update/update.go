@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Source is a release API returning the latest release in the Gitee or GitHub
@@ -242,7 +243,11 @@ func Install(archive, exe string) (err error) {
 	}()
 	for _, name := range Files {
 		target := filepath.Join(dir, name)
-		os.Remove(target + ".old")
+		// Another window may still run the previous copy, which cannot be
+		// removed but can be moved aside; Cleanup removes it once it is free.
+		if err := os.Remove(target + ".old"); err != nil && !os.IsNotExist(err) {
+			os.Rename(target+".old", fmt.Sprintf("%s.old-%d", target, time.Now().UnixNano()))
+		}
 		if _, statErr := os.Stat(target); statErr == nil {
 			if err := os.Rename(target, target+".old"); err != nil {
 				return err
@@ -277,6 +282,10 @@ func extract(f *zip.File, path string) error {
 func Cleanup(exe string) {
 	dir := filepath.Dir(exe)
 	for _, name := range Files {
-		os.Remove(filepath.Join(dir, name+".old"))
+		// Copies still run by other windows stay until a later start.
+		old, _ := filepath.Glob(filepath.Join(dir, name+".old*"))
+		for _, path := range old {
+			os.Remove(path)
+		}
 	}
 }

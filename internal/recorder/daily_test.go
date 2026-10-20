@@ -1,6 +1,7 @@
 package recorder
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -120,5 +121,84 @@ func TestDailyOpenStartsNewDayFile(t *testing.T) {
 	defer r.Close()
 	if got := filepath.Base(r.Path()); got != "packets-20261011-001.sqlite3" {
 		t.Fatalf("隔天打开应新建当天的文件，得到 %s", got)
+	}
+}
+
+// Several program windows share the day's archive: each writes its own
+// session while the others write, and nothing is dropped or lost.
+func TestWindowsShareTheDailyArchive(t *testing.T) {
+	dir := t.TempDir()
+	const windows, packets = 2, 2000
+	errs := make(chan error, windows)
+	for w := range windows {
+		go func() {
+			r, err := OpenDaily(dir)
+			if err != nil {
+				errs <- err
+				return
+			}
+			id, err := r.StartSession(device.ProtocolOPCUA, "opc.tcp://window"+string(rune('a'+w))+":4840", 1)
+			if err != nil {
+				r.Close()
+				errs <- err
+				return
+			}
+			for i := range packets {
+				r.Record(id, device.Event{Time: time.Now(), RequestID: uint64(i), Protocol: device.ProtocolOPCUA, Dir: device.DirTX, Operation: "READ", Status: device.StatusSent})
+				if i%200 == 0 {
+					time.Sleep(time.Millisecond)
+				}
+			}
+			if err = r.EndSession(id); err == nil {
+				if dropped, health := r.Health(); dropped != 0 || health != nil {
+					err = fmt.Errorf("dropped %d, %v", dropped, health)
+				}
+			}
+			if closeErr := r.Close(); err == nil {
+				err = closeErr
+			}
+			errs <- err
+		}()
+	}
+	for range windows {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Windows started at the same moment may each reserve a file; a later
+	// one opens the day's latest. Every session is in one of them.
+	r, err := OpenDaily(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	files, err := r.Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ss []Session
+	for _, f := range files {
+		s, err := r.SessionsFile(f, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ss = append(ss, s...)
+	}
+	if len(ss) != windows {
+		t.Fatalf("sessions %+v", ss)
+	}
+	for _, s := range ss {
+		if s.Packets != packets || s.End.IsZero() {
+			t.Fatalf("session %+v", s)
+		}
+	}
+	// A window opened later writes into the same file as the others.
+	other, err := OpenDaily(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if other.Path() != r.Path() {
+		t.Fatalf("later windows use %s and %s", r.Path(), other.Path())
 	}
 }
