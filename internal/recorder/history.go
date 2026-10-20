@@ -185,6 +185,9 @@ func insertExtra(tx *sql.Tx, it item, series map[[2]string]int64) error {
 		return err
 	case it.block != nil:
 		b := it.block
+		// Samples are encoded as steps forward in time; a block can hold
+		// older samples after newer ones, as when the clock was set back.
+		slices.SortStableFunc(b.samples, func(x, y Sample) int { return x.Time.Compare(y.Time) })
 		k := [2]string{b.target, b.node}
 		id, ok := series[k]
 		if !ok {

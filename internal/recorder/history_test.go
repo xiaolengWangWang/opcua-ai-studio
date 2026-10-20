@@ -153,3 +153,29 @@ func TestOldestFilesGoPastTheTotalLimit(t *testing.T) {
 		t.Fatalf("the current file must stay: %v", files)
 	}
 }
+
+// A block whose samples arrive out of time order is stored in order, so
+// each keeps its own time.
+func TestOutOfOrderSamplesKeepTheirTimes(t *testing.T) {
+	r, err := OpenDaily(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	now := time.Now().Truncate(time.Millisecond)
+	r.Sample("opc.tcp://plc:4840", map[string]Sample{"n": {now, 1}})
+	for i := range blockSamples - 1 {
+		r.Sample("opc.tcp://plc:4840", map[string]Sample{"n": {now.Add(time.Duration(i-600) * time.Second), float64(i)}})
+	}
+	var h map[string][]Sample
+	for range 20 {
+		if h, err = r.History("opc.tcp://plc:4840", []string{"n"}, now.Add(-time.Hour)); len(h["n"]) == blockSamples {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	ss := h["n"]
+	if err != nil || len(ss) != blockSamples || !ss[0].Time.Equal(now.Add(-600*time.Second)) || ss[0].Value != 0 || !ss[blockSamples-1].Time.Equal(now) {
+		t.Fatalf("%d samples, first %+v, last %+v, %v", len(ss), ss[0], ss[len(ss)-1], err)
+	}
+}
