@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -18,7 +17,7 @@ import (
 
 func (d *Desktop) connectionPanel() fyne.CanvasObject {
 	d.target = widget.NewEntry()
-	d.target.SetPlaceHolder("opc.tcp://192.168.1.10:4840")
+	d.target.SetPlaceHolder("opc.tcp://192.168.1.10:4840，或点击“搜索服务器”")
 	connect := func() {
 		cfg, err := d.config()
 		if err != nil {
@@ -26,48 +25,48 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 			return
 		}
 		d.allowWrite.SetChecked(false)
+		d.loadReference(d.referenceKey(cfg.Target))
 		d.run(func(ctx context.Context) error { return d.controller.Connect(ctx, cfg) }, d.saveInputs)
 	}
 	d.target.OnSubmitted = func(string) { connect() }
 	d.connectBtn = widget.NewButtonWithIcon("连接", theme.LoginIcon(), connect)
-	d.disconnectBtn = widget.NewButton("断开", func() {
+	d.disconnectBtn = widget.NewButtonWithIcon("断开", theme.LogoutIcon(), func() {
 		d.allowWrite.SetChecked(false)
 		d.run(func(context.Context) error { return d.controller.Disconnect() }, nil)
 	})
-	d.demoBtn = widget.NewButton("启动本机演示", func() {
+	d.demoBtn = widget.NewButtonWithIcon("本机演示", theme.MediaPlayIcon(), func() {
 		d.allowWrite.SetChecked(false)
+		d.loadReference(demoReference)
 		d.run(d.controller.StartDemo, func() {
 			d.target.SetText(d.controller.Snapshot().DemoTarget)
+			d.profile.ClearSelected()
 			d.policy.SetSelected("None")
 			d.mode.SetSelected("None")
 			d.addresses.SetText(strings.Join(append([]string{simulator.CounterNode}, simulator.ChineseNodes...), "\n"))
 			d.singleNode.SetText(simulator.CounterNode)
 			d.allRoot.SetText("ns=2;i=85")
 			d.browseRoot.SetText("ns=2;i=85")
-			d.kind.SetSelected("Int32")
+			d.kind.SetSelected("Auto")
 			d.count.SetText("1")
+			d.singleKind.SetSelected("Int32")
+			d.singleCount.SetText("1")
 		})
 	})
-	d.stopDemoBtn = widget.NewButton("停止演示", func() {
+	d.stopDemoBtn = widget.NewButtonWithIcon("停止演示", theme.MediaStopIcon(), func() {
 		d.allowWrite.SetChecked(false)
 		d.run(func(context.Context) error { return d.controller.StopDemo() }, nil)
 	})
-	d.discoverBtn = widget.NewButton("发现端点", func() {
-		target := d.target.Text
+	d.discoverBtn = widget.NewButtonWithIcon("发现端点", theme.ListIcon(), func() {
+		target := strings.TrimSpace(d.target.Text)
 		timeout, err := time.ParseDuration(d.timeout.Text)
 		if err != nil {
 			d.showError(err)
 			return
 		}
 		var ee []opcua.Endpoint
-		d.run(func(ctx context.Context) error { var e error; ee, e = opcua.Endpoints(ctx, target, timeout); return e }, func() {
-			var lines []string
-			for _, e := range ee {
-				lines = append(lines, fmt.Sprintf("%s\n%s / %s  %v", e.URL, e.Policy, e.Mode, e.Authentication))
-			}
-			dialog.ShowInformation("服务器端点", strings.Join(lines, "\n\n"), d.win)
-		})
+		d.run(func(ctx context.Context) error { var e error; ee, e = opcua.Endpoints(ctx, target, timeout); return e }, func() { d.endpointsDialog(ee) })
 	})
+	d.scanBtn = widget.NewButtonWithIcon("搜索服务器", theme.SearchIcon(), d.serverSearchDialog)
 	d.timeout = widget.NewEntry()
 	d.timeout.SetText("5s")
 	d.username = widget.NewEntry()
@@ -81,12 +80,19 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 	d.mode.SetSelected("None")
 	security := container.NewGridWithColumns(2, widget.NewForm(widget.NewFormItem("安全策略", d.policy), widget.NewFormItem("安全模式", d.mode), widget.NewFormItem("超时", d.timeout), widget.NewFormItem("用户名", d.username), widget.NewFormItem("密码", d.password)), widget.NewForm(widget.NewFormItem("客户端证书", d.cert), widget.NewFormItem("客户端私钥", d.key), widget.NewFormItem("可信服务器证书", d.serverCert)))
 	d.probeBtn = widget.NewButtonWithIcon("连接数测试", theme.ComputerIcon(), d.probeSessionsDialog)
+	d.serverInfoBtn = widget.NewButtonWithIcon("服务器信息", theme.InfoIcon(), d.serverInfoDialog)
+	d.autoReconnect = widget.NewCheck("断线自动重连", nil)
+	d.autoReconnect.SetChecked(true)
+	d.profile = widget.NewSelect(nil, d.applyProfile)
+	d.profile.PlaceHolder = "选择已保存的连接"
+	d.saveProfileBtn = widget.NewButtonWithIcon("保存配置", theme.DocumentSaveIcon(), d.saveProfileDialog)
+	d.deleteProfileBtn = widget.NewButtonWithIcon("", theme.DeleteIcon(), d.deleteProfile)
 	d.connectBtn.Importance = widget.HighImportance
-	row := container.NewBorder(nil, nil, widget.NewLabelWithStyle("Endpoint", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.discoverBtn, d.connectBtn, d.disconnectBtn), d.target)
-	demo := widget.NewLabel("匿名演示 · 回环服务器 · Counter = 42 · 含中文点位")
-	demo.Importance = widget.LowImportance
-	tools := container.NewHBox(d.demoBtn, d.stopDemoBtn, demo, layout.NewSpacer(), d.probeBtn)
-	return container.NewVBox(row, tools, widget.NewAccordion(widget.NewAccordionItem("安全与认证", security)))
+	row := container.NewBorder(nil, nil, widget.NewLabelWithStyle("Endpoint", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.scanBtn, d.discoverBtn, d.connectBtn, d.disconnectBtn), d.target)
+	profiles := container.NewHBox(widget.NewLabelWithStyle("连接配置", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewGridWrap(fyne.NewSize(220, d.profile.MinSize().Height), d.profile), d.saveProfileBtn, d.deleteProfileBtn, d.autoReconnect)
+	tools := container.NewHBox(layout.NewSpacer(), d.serverInfoBtn, d.probeBtn, d.demoBtn, d.stopDemoBtn)
+	d.security = widget.NewAccordion(widget.NewAccordionItem("安全与认证", security))
+	return container.NewVBox(row, container.NewBorder(nil, nil, profiles, nil, tools), d.security)
 }
 
 // section groups related controls on a card under a bold title.
@@ -97,7 +103,7 @@ func section(title string, objects ...fyne.CanvasObject) fyne.CanvasObject {
 func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	d.addresses = widget.NewMultiLineEntry()
 	d.addresses.SetMinRowsVisible(4)
-	d.addresses.SetPlaceHolder("每行一个 NodeID，例如 ns=2;s=Counter\n浏览页点击变量会追加到这里")
+	d.addresses.SetPlaceHolder("每行一个 NodeID 或 viSCADA 属性标识，例如\nns=2;s=Counter、2::s::Counter::DINT\n浏览页点击变量会追加到这里")
 	d.kind = widget.NewSelect(device.Types, nil)
 	d.kind.SetSelected("Auto")
 	d.count = widget.NewEntry()
@@ -135,17 +141,31 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	d.writeBtn.Importance = widget.DangerImportance
 	d.writeStatus = widget.NewLabel("")
 	d.writeStatus.Wrapping = fyne.TextWrapWord
-	d.singleNode = widget.NewEntry()
-	d.singleNode.SetPlaceHolder("输入或选择一个 NodeID")
-	d.verifyBtn = widget.NewButton("单点验证", func() {
-		p, err := d.singlePoint()
-		if err != nil {
-			d.showError(err)
-			return
+	d.singleNode = widget.NewSelectEntry(nil)
+	d.singleNode.SetPlaceHolder("NodeID 或 viSCADA 属性标识，可下拉选择")
+	d.singleNode.OnChanged = func(text string) {
+		if kind, ok := d.singleKinds[text]; ok {
+			d.singleKind.SetSelected(kind)
+			d.singleCount.SetText("1")
 		}
-		d.runCheck(func(ctx context.Context) error { return d.controller.VerifyPoint(ctx, p) }, nil)
-	})
+	}
+	d.singleKind = widget.NewSelect(device.Types, nil)
+	d.singleKind.SetSelected("Auto")
+	d.singleCount = widget.NewEntry()
+	d.singleCount.SetText("1")
+	d.verifyBtn = widget.NewButtonWithIcon("单点验证", theme.SearchIcon(), d.verifySingle)
+	d.verifyBtn.Importance = widget.HighImportance
 	d.singleNode.OnSubmitted = func(string) { d.verifyBtn.OnTapped() }
+	d.singleResult = widget.NewLabel("")
+	d.singleResult.Wrapping = fyne.TextWrapWord
+	d.singleResult.Selectable = true
+	d.singleResult.Hide()
+	d.copyIdentBtn = widget.NewButtonWithIcon("复制属性标识", theme.ContentCopyIcon(), func() {
+		if d.singleIdent != "" {
+			d.win.Clipboard().SetContent(d.singleIdent)
+		}
+	})
+	d.referenceBtn = widget.NewButtonWithIcon("设为基准点位", theme.ConfirmIcon(), d.setReference)
 	d.allRoot = widget.NewEntry()
 	d.allRoot.SetText("i=85")
 	d.fullBtn = widget.NewButtonWithIcon("全量读取", theme.DownloadIcon(), func() { d.startFullRead(d.allRoot.Text) })
@@ -159,12 +179,21 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	d.pointSummary.Wrapping = fyne.TextWrapWord
 	d.scanStatus = widget.NewLabel("")
 	d.scanStatus.Wrapping = fyne.TextWrapWord
-	d.resultFilter = widget.NewSelect(filters, func(string) {
+	refreshRows := func(string) {
 		if d.table != nil {
 			d.refreshPointRows()
 		}
-	})
+	}
+	d.resultFilter = widget.NewSelect(filters, refreshRows)
 	d.resultFilter.SetSelected("全部")
+	d.search = widget.NewEntry()
+	d.search.SetPlaceHolder("搜索 NodeID、名称或路径；模糊可输入多个关键字，空格分隔")
+	d.search.OnChanged = refreshRows
+	d.searchMode = widget.NewRadioGroup(searchModes, refreshRows)
+	d.searchMode.Horizontal = true
+	d.searchMode.Required = true
+	d.searchMode.SetSelected("模糊")
+	clearSearch := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() { d.search.SetText("") })
 	d.exportBtn = widget.NewButtonWithIcon("导出 CSV", theme.DocumentSaveIcon(), d.exportPointsDialog)
 	d.exportAttrBtn = widget.NewButtonWithIcon("导出属性表", theme.DocumentSaveIcon(), d.exportAttributesDialog)
 	d.importBtn = widget.NewButtonWithIcon("导入属性表验证", theme.FolderOpenIcon(), d.importAttributesDialog)
@@ -176,44 +205,57 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 		}
 	}), d.jobBar)
 	d.jobBox.Hide()
-	d.table = newTextTable(func() int { return len(d.visible) }, pointHeader, d.pointCell, d.pointStyle, []float32{260, 80, 55, 150, 190, 300})
+	d.table = newTextTable(func() int { return len(d.visible) }, pointHeader, d.pointCell, d.pointStyle, []float32{240, 130, 75, 50, 140, 180, 280})
 	d.table.OnSelected = func(id widget.TableCellID) {
-		if id.Row < 0 || id.Row >= len(d.visible) {
+		if id.Row >= 0 && id.Row < len(d.visible) {
+			d.selectResult(d.snapshot.Results[d.visible[id.Row]])
+		}
+	}
+	d.tree = d.newPointTree()
+	d.tree.Hide()
+	expand := widget.NewButtonWithIcon("展开全部", theme.MenuExpandIcon(), func() { d.tree.OpenAllBranches() })
+	collapse := widget.NewButtonWithIcon("折叠", theme.MenuDropUpIcon(), func() { d.tree.CloseAllBranches() })
+	treeTools := container.NewHBox(expand, collapse)
+	treeTools.Hide()
+	d.viewMode = widget.NewRadioGroup([]string{"表格", "树状"}, func(mode string) {
+		if d.tree == nil {
 			return
 		}
-		r := d.snapshot.Results[d.visible[id.Row]]
-		d.singleNode.SetText(r.Address.NodeID)
-		// The declared type lets an imported or BAD control point be written.
-		kind := string(r.Kind())
-		if kind == "" {
-			kind = "Auto"
+		if mode == "树状" {
+			d.table.Hide()
+			d.tree.Show()
+			treeTools.Show()
+			d.treeIndex = pointTree{}
+			d.refreshTree()
+		} else {
+			d.tree.Hide()
+			treeTools.Hide()
+			d.table.Show()
 		}
-		d.kind.SetSelected(kind)
-		n := 1
-		if r.Value.Elements != nil {
-			n = len(r.Value.Elements)
-			if n == 0 {
-				n = 1
-			}
-		}
-		d.count.SetText(fmt.Sprint(n))
-	}
+	})
+	d.viewMode.Horizontal = true
+	d.viewMode.Required = true
+	d.viewMode.SetSelected("表格")
 	copy := widget.NewButtonWithIcon("复制结果", theme.ContentCopyIcon(), d.copyPointRows)
 	d.pollBtn.SetIcon(theme.MediaPlayIcon())
 	d.stopPollBtn.SetIcon(theme.MediaPauseIcon())
-	d.verifyBtn.SetIcon(theme.SearchIcon())
 	options := widget.NewForm(widget.NewFormItem("类型", d.kind), widget.NewFormItem("数量", d.count), widget.NewFormItem("轮询间隔", d.interval))
+	singleOptions := widget.NewForm(widget.NewFormItem("类型", d.singleKind), widget.NewFormItem("数量", d.singleCount))
 	// Controls sit in a scrolling side column so the result table keeps the
 	// full window height for large lists.
 	controls := container.NewVBox(
+		section("单点验证", d.singleNode, singleOptions, d.verifyBtn, d.singleResult, container.NewGridWithColumns(2, d.copyIdentBtn, d.referenceBtn)),
 		section("节点清单", d.addresses, options, container.NewGridWithColumns(3, d.readBtn, d.pollBtn, d.stopPollBtn)),
-		section("单点验证", d.singleNode, d.verifyBtn),
 		section("全量读取", widget.NewForm(widget.NewFormItem("父节点", d.allRoot)), container.NewGridWithColumns(2, d.fullBtn, d.stopReadBtn)),
-		section("viSCADA 属性表", container.NewGridWithColumns(2, d.importBtn, d.exportAttrBtn)),
+		section("viSCADA 属性表", d.importBtn),
 		section("写入", d.writeValue, container.NewBorder(nil, nil, d.allowWrite, nil, d.writeBtn), d.writeStatus),
 	)
-	toolbar := container.NewBorder(nil, nil, container.NewHBox(widget.NewLabelWithStyle("筛选", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), d.resultFilter), container.NewHBox(d.exportBtn, copy))
-	results := container.NewBorder(container.NewVBox(toolbar, d.pointSummary, d.scanStatus, d.jobBox), nil, nil, nil, d.table)
+	bold := func(text string) *widget.Label {
+		return widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	}
+	searchRow := container.NewBorder(nil, nil, bold("搜索"), container.NewHBox(clearSearch, d.searchMode), d.search)
+	toolbar := container.NewBorder(nil, nil, container.NewHBox(bold("筛选"), d.resultFilter, bold("视图"), d.viewMode, treeTools), container.NewHBox(d.exportBtn, d.exportAttrBtn, copy))
+	results := container.NewBorder(container.NewVBox(searchRow, toolbar, d.pointSummary, d.scanStatus, d.jobBox), nil, nil, nil, container.NewStack(d.table, d.tree))
 	split := container.NewHSplit(container.NewVScroll(controls), results)
 	split.SetOffset(.28)
 	return split
@@ -228,6 +270,21 @@ func (d *Desktop) browsePanel() fyne.CanvasObject {
 	d.browseRoot.OnSubmitted = func(string) { browse() }
 	d.browseBtn = widget.NewButton("浏览子节点", browse)
 	d.browseFullBtn = widget.NewButton("读取此节点下全部变量", func() { d.startFullRead(d.browseRoot.Text) })
+	d.nodeSearch = widget.NewEntry()
+	d.nodeSearch.SetPlaceHolder("在父节点下按名称、NodeID 搜索节点，例如 温度 或 Station001 Tag")
+	d.nodeSearchMode = widget.NewRadioGroup(searchModes, nil)
+	d.nodeSearchMode.Horizontal = true
+	d.nodeSearchMode.Required = true
+	d.nodeSearchMode.SetSelected("模糊")
+	d.nodeSearchBtn = widget.NewButtonWithIcon("搜索节点", theme.SearchIcon(), d.searchNodes)
+	d.nodeSearch.OnSubmitted = func(string) { d.nodeSearchBtn.OnTapped() }
+	d.stopSearchBtn = widget.NewButtonWithIcon("停止", theme.MediaStopIcon(), func() {
+		if d.checkCancel != nil {
+			d.checkCancel()
+		}
+	})
+	d.browseStatus = widget.NewLabel("")
+	d.browseStatus.Importance = widget.LowImportance
 	d.browseSelected = map[string]bool{}
 	d.selectionLabel = widget.NewLabel("")
 	d.selectAllBtn = widget.NewButton("全选", func() {
@@ -260,8 +317,8 @@ func (d *Desktop) browsePanel() fyne.CanvasObject {
 		if strings.Contains(n.Class, "Variable") {
 			d.appendPoint(n.NodeID)
 			d.singleNode.SetText(n.NodeID)
-			d.kind.SetSelected("Auto")
-			d.count.SetText("1")
+			d.singleKind.SetSelected("Auto")
+			d.singleCount.SetText("1")
 			d.tabs.SelectIndex(0)
 		} else {
 			d.browseRoot.SetText(n.NodeID)
@@ -269,12 +326,28 @@ func (d *Desktop) browsePanel() fyne.CanvasObject {
 	}
 	d.browseBtn.SetIcon(theme.NavigateNextIcon())
 	d.readSelectedBtn.Importance = widget.HighImportance
-	hint := widget.NewLabel("点击“选择”列勾选节点，可多选或全选后一起读取：对象读取其下全部变量，变量读取自身。点击其他列：对象继续浏览，变量追加到清单。Objects 根节点为 i=85。")
+	hint := widget.NewLabel("点击“选择”列勾选节点，可多选或全选后一起读取：对象读取其下全部变量，变量读取自身。点击其他列：对象继续浏览，变量追加到清单。Objects 根节点为 i=85。搜索节点在父节点下逐级查找，结果可勾选读取。")
 	hint.Wrapping = fyne.TextWrapWord
 	hint.Importance = widget.LowImportance
 	selection := container.NewBorder(nil, nil, container.NewHBox(d.selectAllBtn, d.clearSelectBtn, d.readSelectedBtn), nil, d.selectionLabel)
-	top := widget.NewCard("", "", container.NewVBox(container.NewBorder(nil, nil, widget.NewLabelWithStyle("父节点", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.browseBtn, d.browseFullBtn), d.browseRoot), hint, selection))
+	search := container.NewBorder(nil, nil, widget.NewLabelWithStyle("搜索", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.nodeSearchMode, d.nodeSearchBtn, d.stopSearchBtn), d.nodeSearch)
+	top := widget.NewCard("", "", container.NewVBox(container.NewBorder(nil, nil, widget.NewLabelWithStyle("父节点", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.browseBtn, d.browseFullBtn), d.browseRoot), search, hint, selection, d.browseStatus))
 	return container.NewBorder(top, nil, nil, nil, d.browseTable)
+}
+
+// searchNodes searches below the browse parent; the matches replace the
+// browse list.
+func (d *Desktop) searchNodes() {
+	text := strings.TrimSpace(d.nodeSearch.Text)
+	if text == "" {
+		d.showError(fmt.Errorf("请输入要搜索的名称或 NodeID"))
+		return
+	}
+	root := d.browseRoot.Text
+	match := matchNode(text, d.nodeSearchMode.Selected == "精确")
+	d.runCheck(func(ctx context.Context) error {
+		return d.controller.SearchNodes(ctx, root, func(n device.Node) bool { return match(n.NodeID, n.DisplayName, n.BrowseName) })
+	}, nil)
 }
 func (d *Desktop) diagnosticsPanel() fyne.CanvasObject {
 	d.logs = widget.NewLabel("")

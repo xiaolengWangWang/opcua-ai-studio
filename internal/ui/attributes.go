@@ -89,9 +89,13 @@ func (d *Desktop) importAttributesDialog() {
 	open.Show()
 }
 
-// exportAttributesDialog offers the four exports of the current snapshot.
+// exportAttributesDialog offers the exports of the current snapshot: the rows
+// shown, then all, GOOD, control and Chinese points, which a search narrows.
 func (d *Desktop) exportAttributesDialog() {
 	snapshot := d.snapshot
+	q := d.query()
+	shown := q.matcher()
+	searched := pointQuery{filter: "全部", search: q.search, exact: q.exact}.matcher()
 	count := func(keep func(*device.ReadResult) bool) int {
 		n := 0
 		for i := range snapshot.Results {
@@ -103,6 +107,10 @@ func (d *Desktop) exportAttributesDialog() {
 	}
 	var box dialog.Dialog
 	choice := func(label, tag string, keep func(*device.ReadResult) bool) *widget.Button {
+		if q.search != "" && tag != "当前列表" {
+			only := keep
+			keep = func(r *device.ReadResult) bool { return searched(r) && only(r) }
+		}
 		n := count(keep)
 		b := widget.NewButton(fmt.Sprintf("%s（%d 个）", label, n), func() {
 			box.Hide()
@@ -113,13 +121,20 @@ func (d *Desktop) exportAttributesDialog() {
 		}
 		return b
 	}
-	content := container.NewVBox(
-		widget.NewLabel("导出 viSCADA 设备类属性表：填写属性标识和读写模式，其他列留空。\n数组和平台不支持的类型（如 DateTime）会跳过并在完成后列出。"),
-		choice("全部点位", "全部", func(*device.ReadResult) bool { return true }),
-		choice("仅 GOOD 点位", "GOOD", func(r *device.ReadResult) bool { return r.Quality == "GOOD" }),
-		choice("仅控制点位（可写）", "控制点位", func(r *device.ReadResult) bool { return r.Writable() }),
-		choice("仅含中文点位", "含中文", func(r *device.ReadResult) bool { return device.HasChinese(r.Address.NodeID) }),
-	)
+	note := "导出 viSCADA 设备类属性表：填写属性标识和读写模式，其他列留空。\n数组和平台不支持的类型（如 DateTime）会跳过并在完成后列出。"
+	if q.search != "" {
+		note += fmt.Sprintf("\n当前搜索“%s”，以下各项只包含搜索到的点位。", q.search)
+	}
+	content := container.NewVBox(widget.NewLabel(note))
+	if q.search != "" || q.filter != "全部" {
+		current := choice("当前列表："+q.label(), "当前列表", shown)
+		current.Importance = widget.HighImportance
+		content.Add(current)
+	}
+	content.Add(choice("全部点位", "全部", func(*device.ReadResult) bool { return true }))
+	content.Add(choice("仅 GOOD 点位", "GOOD", func(r *device.ReadResult) bool { return r.Quality == "GOOD" }))
+	content.Add(choice("仅控制点位（可写）", "控制点位", func(r *device.ReadResult) bool { return r.Writable() }))
+	content.Add(choice("仅含中文点位", "含中文", func(r *device.ReadResult) bool { return device.HasChinese(r.Address.NodeID) }))
 	box = dialog.NewCustom("导出属性表", "取消", content, d.win)
 	box.Show()
 }

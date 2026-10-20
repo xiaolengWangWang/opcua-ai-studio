@@ -13,17 +13,31 @@ import (
 	"time"
 )
 
-// ExportPointsCSV exports the displayed snapshot, without performing another read.
+// ExportPointsCSV exports the displayed snapshot with the filter and the
+// shown search, without performing another read.
 func (d *Desktop) ExportPointsCSV(out io.Writer, filter string) error {
-	return exportPointsCSV(context.Background(), out, d.snapshot, filter, nil)
+	q := pointQuery{filter: filter}
+	if d.search != nil {
+		shown := d.query()
+		q.search, q.exact = shown.search, shown.exact
+	}
+	return exportPointsCSV(context.Background(), out, d.snapshot, q, nil)
 }
 
-// exportPointsCSV writes the rows matching filter; done reports the rows
-// written and ctx cancels a long export.
-func exportPointsCSV(ctx context.Context, out io.Writer, snapshot service.Snapshot, filter string, done func(int)) error {
-	if !slices.Contains(filters, filter) && filter != "NOT_READ" {
-		return fmt.Errorf("未知质量筛选 %q", filter)
+// ShowSearch sets the result search and shows the table or the tree, as the
+// smoke test captures them.
+func (d *Desktop) ShowSearch(search string, tree bool) {
+	d.search.SetText(search)
+	d.viewMode.SetSelected(map[bool]string{false: "表格", true: "树状"}[tree])
+}
+
+// exportPointsCSV writes the rows matching q; done reports the rows written
+// and ctx cancels a long export.
+func exportPointsCSV(ctx context.Context, out io.Writer, snapshot service.Snapshot, q pointQuery, done func(int)) error {
+	if !slices.Contains(filters, q.filter) && q.filter != "NOT_READ" {
+		return fmt.Errorf("未知质量筛选 %q", q.filter)
 	}
+	keep := q.matcher()
 	if _, err := io.WriteString(out, "\ufeff"); err != nil {
 		return err
 	}
@@ -45,7 +59,7 @@ func exportPointsCSV(ctx context.Context, out io.Writer, snapshot service.Snapsh
 	written := 0
 	for i := range snapshot.Results {
 		r := &snapshot.Results[i]
-		if !matchesPoint(r, filter) {
+		if !keep(r) {
 			continue
 		}
 		if written%2000 == 0 {

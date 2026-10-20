@@ -31,7 +31,10 @@ const (
 	maxNodes  = 100000
 )
 
-// VerifyPoint updates one result without discarding the rest of the point list.
+var errTooLarge = fmt.Errorf("父节点下超过 %d 个变量或 %d 个节点，请选择较小的父节点", maxPoints, maxNodes)
+
+// VerifyPoint updates one result, with its declared type and access, without
+// discarding the rest of the point list.
 func (c *Controller) VerifyPoint(ctx context.Context, point Point) error {
 	c.StopPolling()
 	return c.readMode(ctx, []Point{point}, 0, true)
@@ -44,7 +47,8 @@ type scanTask struct {
 	id       string
 	scope    string
 	name     func(int) string
-	nodes    *[]device.Node // replaces the browse list when set
+	path     func(int) []string // browse path, when known
+	nodes    *[]device.Node     // replaces the browse list when set
 	complete bool
 }
 
@@ -55,6 +59,9 @@ func (c *Controller) newScan(s *session, scope string, name func(int) string, no
 func (t *scanTask) update(results []device.ReadResult, status string) {
 	for i := range results {
 		results[i].DisplayName = t.name(i)
+		if t.path != nil {
+			results[i].Path = t.path(i)
+		}
 		results[i].TaskID = t.id
 		results[i].Scope = t.scope
 		results[i].Complete = t.complete
@@ -112,6 +119,10 @@ func (c *Controller) ReadNodes(ctx context.Context, roots []device.Node) error {
 	var points []Point
 	var level []string
 	seen := map[string]bool{}
+	// Each node's names from its read root, so the results show as a tree;
+	// siblings share their parent's slice.
+	paths := map[string][]string{}
+	var pointPaths [][]string
 	for _, n := range roots {
 		a, err := device.ParseAddress(n.NodeID, "Auto", 1)
 		if err != nil {
@@ -122,9 +133,11 @@ func (c *Controller) ReadNodes(ctx context.Context, roots []device.Node) error {
 		}
 		seen[n.NodeID] = true
 		level = append(level, n.NodeID)
+		paths[n.NodeID] = []string{nodeName(n)}
 		if strings.HasSuffix(n.Class, "Variable") {
 			nodes = append(nodes, n)
 			points = append(points, Point{n.NodeID, "Auto", 1})
+			pointPaths = append(pointPaths, nil)
 		}
 	}
 	scope := level[0]
@@ -143,55 +156,33 @@ func (c *Controller) ReadNodes(ctx context.Context, roots []device.Node) error {
 		}
 		return ""
 	}, &nodes)
-	t.update(nil, "浏览中 · 正在查找全部变量")
-	// Browse level by level, many nodes per request, so 50000 variables take
-	// hundreds of round trips rather than one per node.
-	var reported time.Time
-	for len(level) > 0 && err == nil {
-		var next []string
-		err = paced(ctx, s.d, len(level), func(start, end, _ int) (int, error) {
-			lists, err := browseNodes(ctx, s.d, level[start:end])
-			if err != nil {
-				return 0, err
-			}
-			// Pages are bounded by the driver; the request grows with the batch.
-			size := 0
-			for _, n := range level[start:end] {
-				size += len(n) + 32
-			}
-			for _, children := range lists {
-				for _, n := range children {
-					variable := strings.HasSuffix(n.Class, "Variable")
-					if !variable && !strings.HasSuffix(n.Class, "Object") {
-						continue
-					}
-					a, e := device.ParseAddress(n.NodeID, "Auto", 1)
-					if e != nil {
-						return 0, e
-					}
-					n.NodeID = a.NodeID
-					if seen[n.NodeID] {
-						continue
-					}
-					if len(seen) >= maxNodes || variable && len(points) >= maxPoints {
-						return 0, fmt.Errorf("父节点下超过 %d 个变量或 %d 个节点，请选择较小的父节点", maxPoints, maxNodes)
-					}
-					seen[n.NodeID] = true
-					next = append(next, n.NodeID)
-					if variable {
-						nodes = append(nodes, n)
-						points = append(points, Point{n.NodeID, "Auto", 1})
-					}
-				}
-			}
-			if time.Since(reported) >= progressInterval {
-				reported = time.Now()
-				t.update(nil, fmt.Sprintf("浏览中 · 已发现 %d 个变量", len(points)))
-			}
-			return size, nil
-		})
-		level = next
+	t.path = func(i int) []string {
+		if i < len(pointPaths) {
+			return pointPaths[i]
+		}
+		return nil
 	}
+	t.update(nil, "浏览中 · 正在查找全部变量")
+	var reported time.Time
+	err = walk(ctx, s.d, level, seen, func(parent string, n device.Node) error {
+		path := paths[parent]
+		paths[n.NodeID] = append(path[:len(path):len(path)], nodeName(n))
+		if !strings.HasSuffix(n.Class, "Variable") {
+			return nil
+		}
+		if len(points) >= maxPoints {
+			return errTooLarge
+		}
+		nodes = append(nodes, n)
+		points = append(points, Point{n.NodeID, "Auto", 1})
+		pointPaths = append(pointPaths, path)
+		return nil
+	}, func() {
+		if time.Since(reported) >= progressInterval {
+			reported = time.Now()
+			t.update(nil, fmt.Sprintf("浏览中 · 已发现 %d 个变量", len(points)))
+		}
+	})
 	if err != nil {
 		rr := make([]device.ReadResult, len(points))
 		for i, p := range points {

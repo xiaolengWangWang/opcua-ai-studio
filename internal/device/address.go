@@ -42,12 +42,17 @@ func NormalizeType(kind DataType) DataType {
 	}
 	return kind
 }
-func ParseAddress(text string, kind DataType, count int) (Address, error) {
-	text = strings.TrimLeft(text, " \t\r\n")
-	// Only the fields are converted: the identifier is kept as typed.
+// halfWidthFields converts the ＝ and ； of the leading ns= and s= fields;
+// the identifier is kept as typed.
+func halfWidthFields(text string) string {
 	if m := fullWidthPrefix.FindString(text); m != "" {
-		text = strings.NewReplacer("＝", "=", "；", ";").Replace(m) + text[len(m):]
+		return strings.NewReplacer("＝", "=", "；", ";").Replace(m) + text[len(m):]
 	}
+	return text
+}
+
+func ParseAddress(text string, kind DataType, count int) (Address, error) {
+	text = halfWidthFields(strings.TrimLeft(text, " \t\r\n"))
 	// Whitespace after s= belongs to the server's string identifier.
 	if !strings.HasPrefix(text, "s=") && !strings.Contains(text, ";s=") {
 		text = strings.TrimSpace(text)

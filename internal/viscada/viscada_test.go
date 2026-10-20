@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"opcua-ai-studio/internal/device"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,6 +65,37 @@ func TestFromResultFillsAccessAndRejectsArrays(t *testing.T) {
 	r.Value = device.Value{Type: "Int32", Elements: []device.Value{{Type: "Int32"}}}
 	if _, err = FromResult(r); err == nil {
 		t.Fatal("array exported as a scalar attribute")
+	}
+}
+
+func TestVerifyIdentifierAgainstServer(t *testing.T) {
+	read := func(node string, kind device.DataType, r device.ReadResult) device.ReadResult {
+		r.Address = device.Address{NodeID: node, Type: kind, Count: 1}
+		return r
+	}
+	double := device.Value{Type: "Double", Real: 95.5}
+	for _, tc := range []struct {
+		id      string
+		r       device.ReadResult
+		problem string
+		want    string
+	}{
+		{"2::s::热力站.一次供水温度::LREAL", read("ns=2;s=热力站.一次供水温度", "Double", device.ReadResult{Quality: "GOOD", Value: double}), "", "2::s::热力站.一次供水温度::LREAL"},
+		{"2::s::Temp::real", read("ns=2;s=Temp", "Float", device.ReadResult{Quality: "GOOD", Execution: "TYPE_MISMATCH", Value: double}), "属性标识为 REAL，服务器为 Double，应为 LREAL", "2::s::Temp::LREAL"},
+		{"2::i::5::WORD", read("ns=2;i=5", "UInt16", device.ReadResult{Quality: "GOOD", Value: device.Value{Type: "UInt16", Integer: "5"}}), "", "2::i::5::UINT"},
+		{"2::s::Offline::LREAL", read("ns=2;s=Offline", "Double", device.ReadResult{Quality: "BAD", StatusCode: 0x80310000, NodeAttributes: device.NodeAttributes{DataType: "Double"}}), "", "2::s::Offline::LREAL"},
+		{"2::s::Gone::BOOL", read("ns=2;s=Gone", "Boolean", device.ReadResult{Quality: "BAD", StatusCode: 0x80340000}), "不存在", ""},
+		{"2::s::Samples::DINT", read("ns=2;s=Samples", "Int32", device.ReadResult{Quality: "GOOD", Value: device.Value{Type: "Int32", Elements: []device.Value{}}}), "数组", ""},
+		{"0::i::2258::LINT", read("i=2258", "Int64", device.ReadResult{Quality: "GOOD", Value: device.Value{Type: "DateTime"}}), "DateTime", ""},
+		{"2::s::Tag", device.ReadResult{}, "namespace::类型", ""},
+	} {
+		problem, want := Verify(tc.id, tc.r)
+		if (tc.problem == "") != (problem == "") || !strings.Contains(problem, tc.problem) || want != tc.want {
+			t.Fatalf("%s: problem %q, want %q", tc.id, problem, want)
+		}
+	}
+	if !IsIdentifier(" 2::s::Tag::REAL") || IsIdentifier("ns=2;s=Line1::Speed") || IsIdentifier("x::s::Tag::REAL") {
+		t.Fatal("identifier shape")
 	}
 }
 

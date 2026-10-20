@@ -112,6 +112,7 @@ type Client struct {
 	closed     atomic.Bool
 	seq        atomic.Uint64
 	connection string
+	target     string
 }
 
 func Dial(ctx context.Context, target string, o Options) (*Client, error) {
@@ -184,7 +185,7 @@ func Dial(ctx context.Context, target string, o Options) (*Client, error) {
 		c.Close(closeCtx)
 		return nil, err
 	}
-	return &Client{client: c, options: o, connection: strconv.FormatInt(time.Now().UnixNano(), 36)}, nil
+	return &Client{client: c, options: o, connection: strconv.FormatInt(time.Now().UnixNano(), 36), target: target}, nil
 }
 func (c *Client) Close() error {
 	if c.closed.Swap(true) {

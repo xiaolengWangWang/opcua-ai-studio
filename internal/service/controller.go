@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/gopcua/opcua/ua"
 	"opcua-ai-studio/internal/device"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"opcua-ai-studio/internal/recorder"
 	"opcua-ai-studio/internal/simulator"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,7 +25,7 @@ type Options struct {
 	Dial      func(context.Context, string, opcua.Options) (device.Driver, error)
 }
 type Snapshot struct {
-	ScanStatus                                                                     string
+	ScanStatus, BrowseStatus                                                       string
 	Revision, Generation                                                           uint64
 	State, Target, Family, DemoTarget, LastError, RecordDir, RecordError, Readback string
 	Polling                                                                        bool
@@ -33,6 +35,8 @@ type Snapshot struct {
 	Packets                                                                        []device.Event
 	Logs                                                                           []string
 	Dropped                                                                        int64
+	Reference                                                                      *device.ReadResult // the reference point's last read
+	Server                                                                         *opcua.ServerInfo
 }
 type session struct {
 	ctx    context.Context
@@ -43,6 +47,7 @@ type session struct {
 	end    sync.Once
 	id     int64
 	cfg    Config
+	misses atomic.Int32 // timeouts and failed heartbeats in a row
 }
 type Controller struct {
 	mu         sync.Mutex
@@ -56,7 +61,11 @@ type Controller struct {
 	rec        *recorder.Recorder
 	pollCancel context.CancelFunc
 	pollSeq    uint64
+	poll       pollSpec // the running poll, resumed after a reconnect
 	demo       *simulator.Server
+	reference  *Point
+	life       context.Context // ends when the controller closes
+	stop       context.CancelFunc
 }
 
 func New(o Options) *Controller {
@@ -67,6 +76,7 @@ func New(o Options) *Controller {
 		}
 	}
 	c := &Controller{snap: Snapshot{Revision: 1, State: "disconnected", RecordDir: o.RecordDir}, dial: o.Dial}
+	c.life, c.stop = context.WithCancel(context.Background())
 	if c.dial == nil {
 		c.dial = func(ctx context.Context, target string, o opcua.Options) (device.Driver, error) {
 			return opcua.Dial(ctx, target, o)
@@ -197,20 +207,33 @@ func (c *Controller) Disconnect() error {
 	return nil
 }
 func (c *Controller) Connect(ctx context.Context, cfg Config) error {
+	_, err := c.connect(ctx, cfg, 0)
+	return err
+}
+
+// connect opens a session and returns its generation. A reconnect passes the
+// generation of the lost session as resume: the attempt is dropped if the
+// user connected or disconnected since, and the results are kept.
+func (c *Controller) connect(ctx context.Context, cfg Config, resume uint64) (uint64, error) {
 	o, e := cfg.validate()
 	if e != nil {
-		return e
+		return 0, e
 	}
 	if e = c.begin(); e != nil {
-		return e
+		return 0, e
 	}
 	defer c.ops.Done()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return errors.New("程序已关闭")
+		return 0, errors.New("程序已关闭")
+	}
+	if resume != 0 && c.snap.Generation != resume {
+		c.mu.Unlock()
+		return 0, context.Canceled
 	}
 	old := c.detachLocked("connecting")
+	gen := c.snap.Generation
 	sctx, cancel := context.WithCancel(ctx)
 	s := &session{ctx: sctx, cancel: cancel, gate: make(chan struct{}, 1), cfg: cfg}
 	s.gate <- struct{}{}
@@ -225,12 +248,17 @@ func (c *Controller) Connect(ctx context.Context, cfg Config) error {
 	c.s = s
 	c.snap.Target = cfg.Target
 	c.snap.Family = "OPC UA"
-	c.snap.LastError = ""
-	c.snap.Results = nil
-	c.snap.ScanStatus = ""
-	c.snap.Nodes = nil
-	c.snap.WriteResult = nil
-	c.snap.Readback = ""
+	c.snap.Reference = nil
+	c.snap.Server = nil
+	if resume == 0 {
+		c.snap.LastError = ""
+		c.snap.Results = nil
+		c.snap.ScanStatus = ""
+		c.snap.BrowseStatus = ""
+		c.snap.Nodes = nil
+		c.snap.WriteResult = nil
+		c.snap.Readback = ""
+	}
 	c.logLocked("正在连接 " + cfg.Target)
 	c.mu.Unlock()
 	c.finishSession(old)
@@ -264,7 +292,7 @@ func (c *Controller) Connect(ctx context.Context, cfg Config) error {
 		if d != nil {
 			d.Close()
 		}
-		return context.Canceled
+		return gen, context.Canceled
 	}
 	if e != nil {
 		c.snap.State = "error"
@@ -273,13 +301,17 @@ func (c *Controller) Connect(ctx context.Context, cfg Config) error {
 		s.cancel()
 		c.mu.Unlock()
 		c.end(s)
-		return e
+		return gen, e
 	}
 	s.d = d
 	c.snap.State = "connected"
+	c.snap.LastError = ""
 	c.logLocked("OPC UA 会话已连接")
+	s.wg.Add(1)
+	go c.watch(s)
 	c.mu.Unlock()
-	return nil
+	c.describe(ctx)
+	return gen, nil
 }
 func (c *Controller) acquire(ctx context.Context, generation uint64) (*session, context.Context, func(), error) {
 	c.mu.Lock()
@@ -319,21 +351,21 @@ func (c *Controller) failure(s *session, e error) {
 		return
 	}
 	if state, ok := s.d.(interface{ IsClosed() bool }); ok && !state.IsClosed() {
-		return
+		// A silent network drop leaves the socket open: requests time out.
+		if !timedOut(e) || s.misses.Add(1) < heartbeatMisses {
+			return
+		}
+		e = fmt.Errorf("服务器连续 %d 次未响应: %w", heartbeatMisses, e)
 	}
-	c.mu.Lock()
-	if c.s == s && !c.closed {
-		c.snap.State = "error"
-		c.snap.LastError = e.Error()
-		c.stopPollLocked()
-		c.logLocked("通讯失败，需重新连接: " + e.Error())
-		s.cancel()
-	}
-	c.mu.Unlock()
-	s.d.Close()
+	c.lost(s, e)
+}
+
+func timedOut(e error) bool {
+	return errors.Is(e, context.DeadlineExceeded) || errors.Is(e, ua.StatusBadTimeout) || errors.Is(e, ua.StatusBadRequestTimeout)
 }
 func (c *Controller) Close() error {
 	c.once.Do(func() {
+		c.stop()
 		c.mu.Lock()
 		c.closed = true
 		s := c.detachLocked("closed")

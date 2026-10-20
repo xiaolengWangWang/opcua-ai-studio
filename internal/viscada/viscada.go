@@ -78,6 +78,50 @@ func ParseIdentifier(text string) (device.Address, error) {
 	return device.ParseAddress(fmt.Sprintf("ns=%s;%s=%s", ns, kindCode, id), kind, 1)
 }
 
+// IsIdentifier reports whether text is shaped as an attribute identifier,
+// starting with a namespace number and "::"; NodeIDs never start that way.
+func IsIdentifier(text string) bool {
+	ns, _, ok := strings.Cut(strings.TrimSpace(text), "::")
+	_, err := strconv.ParseUint(ns, 10, 16)
+	return ok && err == nil
+}
+
+// Verify checks an attribute identifier against the read result of its point.
+// It reports what is wrong, or "" when the node exists and the identifier's
+// data type matches the server's, and the identifier the server's type
+// implies, "" when the server reports no usable type.
+func Verify(identifier string, r device.ReadResult) (problem, want string) {
+	a, err := ParseIdentifier(identifier)
+	if err != nil {
+		return err.Error(), ""
+	}
+	switch {
+	case r.Missing():
+		return "服务器上不存在该节点，请核对命名空间和标识", ""
+	case r.Execution == "REQUEST_FAILED" || r.Execution == "NOT_READ":
+		return "未能读取：" + r.Error, ""
+	case r.Value.Elements != nil:
+		return "节点为数组，viSCADA 属性不支持数组", ""
+	}
+	// The server's type: the value read, else the declared type.
+	kind := r.Value.Type
+	if kind == "" || kind == "Null" {
+		kind = r.DataType
+	}
+	if kind == "" {
+		return "服务器未报告数据类型，无法核对", ""
+	}
+	want, err = Identifier(r.Address.NodeID, kind)
+	if err != nil {
+		return err.Error(), ""
+	}
+	if a.Type != "Auto" && a.Type != kind {
+		declared := strings.ToUpper(strings.TrimSpace(identifier[strings.LastIndex(identifier, "::")+2:]))
+		return fmt.Sprintf("数据类型不符：属性标识为 %s，服务器为 %s，应为 %s", declared, kind, platformTypes[kind]), want
+	}
+	return "", want
+}
+
 // FromResult describes a read point as an attribute; it fails for arrays and
 // for types the platform cannot store.
 func FromResult(r device.ReadResult) (Attribute, error) {

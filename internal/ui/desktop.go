@@ -45,7 +45,7 @@ type Desktop struct {
 	connectBtn, disconnectBtn, demoBtn, stopDemoBtn, readBtn, pollBtn, stopPollBtn, writeBtn, browseBtn, discoverBtn *widget.Button
 	table, browseTable                                                                                               *widget.Table
 	resultFilter                                                                                                     *widget.Select
-	singleNode, allRoot                                                                                              *widget.Entry
+	allRoot                                                                                                          *widget.Entry
 	verifyBtn, fullBtn, browseFullBtn, stopReadBtn, exportBtn                                                        *widget.Button
 	scanStatus                                                                                                       *widget.Label
 	pointSummary                                                                                                     *widget.RichText
@@ -64,6 +64,32 @@ type Desktop struct {
 	tabs                                                                                                             *container.AppTabs
 	version                                                                                                          string
 	updateBtn, checkUpdateBtn                                                                                        *widget.Button
+	// Single point card.
+	singleNode                 *widget.SelectEntry
+	singleKind                 *widget.Select
+	singleCount                *widget.Entry
+	singleResult               *widget.Label
+	singleKinds                map[string]string // the node list's points and their types
+	singleIdent                string            // the shown point's viSCADA 属性标识
+	copyIdentBtn, referenceBtn *widget.Button
+	// Reference point, saved per endpoint and shown in the header.
+	reference                *service.Point
+	refBox                   *fyne.Container
+	refLabel                 *widget.Label
+	refCheckBtn, refClearBtn *widget.Button
+	// Result search and tree.
+	search               *widget.Entry
+	searchMode, viewMode *widget.RadioGroup
+	tree                 *widget.Tree
+	treeIndex            pointTree
+	// Connection profiles, server search and node search.
+	profile                                                                                *widget.Select
+	autoReconnect                                                                          *widget.Check
+	security                                                                               *widget.Accordion
+	scanBtn, serverInfoBtn, saveProfileBtn, deleteProfileBtn, nodeSearchBtn, stopSearchBtn *widget.Button
+	nodeSearch                                                                             *widget.Entry
+	nodeSearchMode                                                                         *widget.RadioGroup
+	browseStatus                                                                           *widget.Label
 }
 
 func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
@@ -86,14 +112,19 @@ func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 	logo.SetMinSize(fyne.NewSquareSize(28))
 	title := widget.NewRichText(&widget.TextSegment{Text: "OPC UA AI Studio", Style: widget.RichTextStyle{Inline: true, SizeName: theme.SizeNameSubHeadingText, TextStyle: fyne.TextStyle{Bold: true}}},
 		&widget.TextSegment{Text: "  v" + version, Style: widget.RichTextStyle{Inline: true, ColorName: theme.ColorNamePlaceHolder}})
-	header := container.NewBorder(nil, nil, container.NewHBox(logo, title), container.NewHBox(d.activity, d.status))
+	d.refLabel = widget.NewLabel("")
+	d.refCheckBtn = widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() { d.run(d.controller.CheckReference, nil) })
+	d.refClearBtn = widget.NewButtonWithIcon("", theme.ContentClearIcon(), d.clearReference)
+	d.refBox = container.NewHBox(d.refLabel, d.refCheckBtn, d.refClearBtn)
+	d.refBox.Hide()
+	header := container.NewBorder(nil, nil, container.NewHBox(logo, title), container.NewHBox(d.refBox, d.activity, d.status))
 	d.tabs = container.NewAppTabs(container.NewTabItemWithIcon("点位与读写", theme.ListIcon(), d.pointsPanel()), container.NewTabItemWithIcon("节点浏览", theme.SearchIcon(), d.browsePanel()), container.NewTabItemWithIcon("通讯与日志", theme.DocumentIcon(), d.diagnosticsPanel()), container.NewTabItemWithIcon("AI 诊断", theme.InfoIcon(), d.aiPanel()))
 	open := widget.NewButtonWithIcon("打开记录目录", theme.FolderOpenIcon(), func() {
 		if err := platform.OpenFile(c.Snapshot().RecordDir); err != nil {
 			d.showError(err)
 		}
 	})
-	help := widget.NewButtonWithIcon("读取帮助", theme.HelpIcon(), d.showPointHelp)
+	help := widget.NewButtonWithIcon("操作手册", theme.HelpIcon(), d.showPointHelp)
 	d.checkUpdateBtn = widget.NewButtonWithIcon("检查更新", theme.ViewRefreshIcon(), func() { d.checkUpdates(false) })
 	d.updateBtn = widget.NewButtonWithIcon("", theme.DownloadIcon(), nil)
 	d.updateBtn.Importance = widget.HighImportance
@@ -206,7 +237,15 @@ func (d *Desktop) controls() {
 	set(d.connectBtn, idle)
 	set(d.discoverBtn, idle)
 	set(d.probeBtn, idle)
-	set(d.disconnectBtn, idle && connected)
+	set(d.deleteProfileBtn, d.profile.Selected != "")
+	set(d.serverInfoBtn, idle && connected)
+	set(d.refCheckBtn, idle && connected)
+	set(d.referenceBtn, idle && connected)
+	set(d.copyIdentBtn, d.singleIdent != "")
+	set(d.nodeSearchBtn, idle && connected)
+	set(d.stopSearchBtn, d.checkCancel != nil)
+	// Disconnecting also stops an automatic reconnect.
+	set(d.disconnectBtn, idle && (connected || d.snapshot.State == "reconnecting"))
 	set(d.demoBtn, idle && d.snapshot.DemoTarget == "")
 	set(d.stopDemoBtn, idle && d.snapshot.DemoTarget != "")
 	set(d.readBtn, idle && connected)
@@ -245,18 +284,26 @@ func (d *Desktop) refresh(s service.Snapshot) {
 	if previous.Generation != s.Generation {
 		d.allowWrite.SetChecked(false)
 	}
-	state := map[string]string{"disconnected": "未连接", "connecting": "连接中…", "connected": "已连接", "error": "连接失败", "closed": "已关闭"}[s.State]
+	state := map[string]string{"disconnected": "未连接", "connecting": "连接中…", "connected": "已连接", "reconnecting": "自动重连中…", "error": "连接失败", "closed": "已关闭"}[s.State]
+	if s.State == "connected" && s.Server != nil && s.Server.Product != "" {
+		state += " · " + strings.TrimSpace(s.Server.Product+" "+s.Server.Version)
+	}
 	d.status.SetText(state)
 	d.status.Importance = widget.MediumImportance
-	if s.State == "connected" {
+	switch s.State {
+	case "connected":
 		d.status.Importance = widget.SuccessImportance
-	}
-	if s.State == "error" {
+	case "reconnecting":
+		d.status.Importance = widget.WarningImportance
+	case "error":
 		d.status.Importance = widget.DangerImportance
 	}
 	d.status.Refresh()
 	if s.LastError != "" {
 		d.showError(errors.New(s.LastError))
+	} else if previous.LastError != "" {
+		// An automatic reconnect or a later operation cleared the error.
+		d.lastError.Hide()
 	}
 	d.recordStatus.SetText("记录: " + s.RecordDir)
 	if s.RecordError != "" {
@@ -266,7 +313,9 @@ func (d *Desktop) refresh(s service.Snapshot) {
 		d.recordStatus.Importance = widget.MediumImportance
 	}
 	d.refreshPointRows()
+	d.refreshReference()
 	d.scanStatus.SetText(s.ScanStatus)
+	d.browseStatus.SetText(s.BrowseStatus)
 	// Nodes are copy-on-write: refresh the browse table only for a new list.
 	var first *device.Node
 	if len(s.Nodes) > 0 {
@@ -300,6 +349,7 @@ func (d *Desktop) refresh(s service.Snapshot) {
 func (d *Desktop) config() (service.Config, error) {
 	cfg := service.DefaultConfig()
 	cfg.Target = strings.TrimSpace(d.target.Text)
+	cfg.AutoReconnect = d.autoReconnect.Checked
 	cfg.Policy = d.policy.Selected
 	cfg.Mode = d.mode.Selected
 	cfg.Username = d.username.Text
@@ -328,7 +378,7 @@ func (d *Desktop) points() ([]service.Point, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		a, err := device.ParseAddress(line, device.DataType(d.kind.Selected), n)
+		a, _, err := parsePoint(line, device.DataType(d.kind.Selected), n)
 		if err != nil {
 			return nil, err
 		}
@@ -351,6 +401,7 @@ func (d *Desktop) saveInputs() {
 	p.SetString("cert", d.cert.Text)
 	p.SetString("key", d.key.Text)
 	p.SetString("server-cert", d.serverCert.Text)
+	p.SetBool("auto-reconnect", d.autoReconnect.Checked)
 }
 func (d *Desktop) loadInputs() {
 	p := d.app.Preferences()
@@ -364,6 +415,8 @@ func (d *Desktop) loadInputs() {
 	d.cert.SetText(p.String("cert"))
 	d.key.SetText(p.String("key"))
 	d.serverCert.SetText(p.String("server-cert"))
+	d.autoReconnect.SetChecked(p.BoolWithFallback("auto-reconnect", true))
+	d.storeProfiles(d.profiles(), "")
 }
 func (d *Desktop) copyEvents() {
 	b, err := json.MarshalIndent(d.controller.Snapshot().Packets, "", "  ")
@@ -377,7 +430,7 @@ func (d *Desktop) confirmWrite() {
 	if d.busy != 0 {
 		return
 	}
-	p, err := d.singlePoint()
+	p, _, err := d.singlePoint()
 	if err != nil {
 		d.showError(err)
 		return

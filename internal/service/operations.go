@@ -35,7 +35,8 @@ func (c *Controller) readMode(ctx context.Context, points []Point, generation ui
 	if e != nil {
 		return e
 	}
-	rr, e := readBatches(ctx, s.d, aa, false, nil)
+	// A single point also reads its type and access, for the verification card.
+	rr, e := readBatches(ctx, s.d, aa, merge, nil)
 	taskID := time.Now().UTC().Format("20060102T150405.000000000Z")
 	scope := "节点清单"
 	if merge {
@@ -76,7 +77,9 @@ func (c *Controller) readMode(ctx context.Context, points []Point, generation ui
 		c.snap.Revision++
 	}
 	c.mu.Unlock()
-	if e != nil && !errors.Is(e, context.Canceled) {
+	if e == nil {
+		s.misses.Store(0)
+	} else if !errors.Is(e, context.Canceled) {
 		c.failure(s, e)
 	}
 	return e
@@ -99,6 +102,9 @@ func (c *Controller) mergeResultsLocked(rr []device.ReadResult) {
 		}
 		if r.DisplayName == "" {
 			r.DisplayName = results[i].DisplayName
+		}
+		if r.Path == nil {
+			r.Path = results[i].Path
 		}
 		if r.NodeAttributes == (device.NodeAttributes{}) {
 			r.NodeAttributes = results[i].NodeAttributes
@@ -177,6 +183,7 @@ func (c *Controller) StartPolling(ctx context.Context, points []Point, interval 
 	c.stopPollLocked()
 	pctx, cancel := context.WithCancel(ctx)
 	c.pollCancel = cancel
+	c.poll = pollSpec{append([]Point(nil), points...), interval}
 	seq, gen := c.pollSeq, c.snap.Generation
 	c.snap.Polling = true
 	c.snap.Revision++
@@ -203,9 +210,9 @@ func (c *Controller) StartPolling(ctx context.Context, points []Point, interval 
 			}
 			// Stopping polling cancels scheduling, while an in-flight read may finish.
 			// Disconnect and shutdown still cancel the session and its active read.
-			if c.read(ctx, points, gen) != nil {
-				return
-			}
+			// A failed read shows in the results and polling goes on: a lost
+			// connection stops it, and a reconnect resumes it.
+			c.read(ctx, points, gen)
 			timer := time.NewTimer(interval)
 			select {
 			case <-pctx.Done():

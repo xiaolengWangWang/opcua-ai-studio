@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,21 +15,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"opcua-ai-studio/assets/help"
 	"opcua-ai-studio/internal/device"
-	"opcua-ai-studio/internal/service"
 )
-
-func (d *Desktop) singlePoint() (service.Point, error) {
-	n, err := strconv.Atoi(d.count.Text)
-	if err != nil {
-		return service.Point{}, errors.New("元素数量须为整数")
-	}
-	node := d.singleNode.Text
-	if strings.TrimSpace(node) == "" && !strings.Contains(strings.Trim(d.addresses.Text, "\r\n"), "\n") {
-		node = strings.Trim(d.addresses.Text, "\r\n")
-	}
-	a, err := device.ParseAddress(node, device.DataType(d.kind.Selected), n)
-	return service.Point{Address: a.NodeID, Type: a.Type, Count: a.Count}, err
-}
 
 func (d *Desktop) appendPoint(node string) {
 	for _, line := range strings.Split(d.addresses.Text, "\n") {
@@ -91,7 +76,7 @@ func matchesPoint(r *device.ReadResult, filter string) bool {
 	}
 }
 
-var pointHeader = []string{"NodeID", "类型", "读写", "值", "质量 / 状态码", "执行状态 / 时间 / 错误"}
+var pointHeader = []string{"NodeID", "名称", "类型", "读写", "值", "质量 / 状态码", "执行状态 / 时间 / 错误"}
 
 var accessNames = map[string]string{"READ": "只读", "READ_WRITE": "读写", "WRITE": "只写", "NONE": "无权限"}
 
@@ -114,7 +99,7 @@ func pointRow(r *device.ReadResult) []string {
 	if quality != "UNKNOWN" {
 		quality += fmt.Sprintf(" / 0x%08X", r.StatusCode)
 	}
-	return []string{r.Address.NodeID, kind, accessNames[r.Access], value, quality, detail}
+	return []string{r.Address.NodeID, r.DisplayName, kind, accessNames[r.Access], value, quality, detail}
 }
 
 // pointCell renders one visible cell on demand: formatting every row of a
@@ -133,18 +118,31 @@ func (d *Desktop) pointStyle(row, col int) widget.Importance {
 		return widget.MediumImportance
 	}
 	r := &d.snapshot.Results[d.visible[row]]
-	switch {
-	case col == 2 && r.Writable():
-		return widget.HighImportance
-	case col == 4 && r.Quality == "GOOD":
+	switch col {
+	case 3:
+		if r.Writable() {
+			return widget.HighImportance
+		}
+	case 5:
+		return qualityImportance(r.Quality)
+	case 6:
+		if r.Execution == "NOT_READ" {
+			return widget.LowImportance
+		}
+		if r.Execution != "READ" {
+			return widget.WarningImportance
+		}
+	}
+	return widget.MediumImportance
+}
+
+func qualityImportance(quality string) widget.Importance {
+	switch quality {
+	case "GOOD":
 		return widget.SuccessImportance
-	case col == 4 && r.Quality == "BAD":
+	case "BAD":
 		return widget.DangerImportance
-	case col == 4 && r.Quality == "UNCERTAIN":
-		return widget.WarningImportance
-	case col == 5 && r.Execution == "NOT_READ":
-		return widget.LowImportance
-	case col == 5 && r.Execution != "READ":
+	case "UNCERTAIN":
 		return widget.WarningImportance
 	}
 	return widget.MediumImportance
@@ -156,10 +154,10 @@ func summarySegment(text string, color fyne.ThemeColorName) widget.RichTextSegme
 }
 
 func (d *Desktop) refreshPointRows() {
-	filter := d.resultFilter.Selected
+	q := d.query()
 	rr := d.snapshot.Results
 	// Results are copy-on-write, so an unchanged slice needs no new rows.
-	key := pointsKey{len(rr), filter, nil}
+	key := pointsKey{len(rr), q, nil}
 	if len(rr) > 0 {
 		key.first = &rr[0]
 	}
@@ -168,6 +166,7 @@ func (d *Desktop) refreshPointRows() {
 	}
 	d.pointsKey = key
 	d.visible = d.visible[:0]
+	keep := q.matcher()
 	counts := map[string]int{}
 	for i := range rr {
 		r := &rr[i]
@@ -182,15 +181,21 @@ func (d *Desktop) refreshPointRows() {
 		if device.HasChinese(r.Address.NodeID) {
 			counts["CHINESE"]++
 		}
-		if matchesPoint(r, filter) {
+		if keep(r) {
 			d.visible = append(d.visible, i)
 		}
 	}
 	d.table.UnselectAll()
 	d.table.Refresh()
+	d.refreshTree()
+	d.refreshSingleOptions()
+	total := fmt.Sprintf("共 %d", len(rr))
+	if len(d.visible) != len(rr) {
+		total = fmt.Sprintf("显示 %d / 共 %d", len(d.visible), len(rr))
+	}
 	sep := summarySegment("  ·  ", theme.ColorNamePlaceHolder)
 	d.pointSummary.Segments = []widget.RichTextSegment{
-		summarySegment(fmt.Sprintf("共 %d", len(rr)), theme.ColorNameForeground), sep,
+		summarySegment(total, theme.ColorNameForeground), sep,
 		summarySegment(fmt.Sprintf("GOOD %d", counts["GOOD"]), theme.ColorNameSuccess), sep,
 		summarySegment(fmt.Sprintf("BAD %d", counts["BAD"]), theme.ColorNameError), sep,
 		summarySegment(fmt.Sprintf("UNCERTAIN %d", counts["UNCERTAIN"]), theme.ColorNameWarning), sep,
@@ -206,9 +211,9 @@ func (d *Desktop) refreshPointRows() {
 }
 
 type pointsKey struct {
-	n      int
-	filter string
-	first  *device.ReadResult
+	n     int
+	q     pointQuery
+	first *device.ReadResult
 }
 
 func (d *Desktop) copyPointRows() {
@@ -219,30 +224,32 @@ func (d *Desktop) copyPointRows() {
 	d.win.Clipboard().SetContent(strings.Join(lines, "\n"))
 }
 
+// exportPointsDialog exports the rows the filter and search show.
 func (d *Desktop) exportPointsDialog() {
 	// The dialog can remain open while polling; export exactly this snapshot.
 	snapshot := d.snapshot
-	filter := d.resultFilter.Selected
+	q := d.query()
+	keep := q.matcher()
 	count := 0
 	for i := range snapshot.Results {
-		if matchesPoint(&snapshot.Results[i], filter) {
+		if keep(&snapshot.Results[i]) {
 			count++
 		}
 	}
 	if count == 0 {
-		d.showError(errors.New("当前筛选没有可导出的点位"))
+		d.showError(errors.New("当前筛选和搜索没有可导出的点位"))
 		return
 	}
-	d.saveFile(fmt.Sprintf("导出 CSV · %s · %d 行", filter, count), "opcua-points-"+time.Now().Format("20060102-150405")+".csv", func(ctx context.Context, out io.Writer, report func(int, int)) (string, error) {
-		err := exportPointsCSV(ctx, out, snapshot, filter, func(done int) { report(done, count) })
-		return fmt.Sprintf("已导出 %d 行（%s）。", count, filter), err
+	d.saveFile(fmt.Sprintf("导出 CSV · %s · %d 行", q.label(), count), "opcua-points-"+time.Now().Format("20060102-150405")+".csv", func(ctx context.Context, out io.Writer, report func(int, int)) (string, error) {
+		err := exportPointsCSV(ctx, out, snapshot, q, func(done int) { report(done, count) })
+		return fmt.Sprintf("已导出 %d 行（%s）。", count, q.label()), err
 	})
 }
 
 func (d *Desktop) showPointHelp() {
 	text := widget.NewRichTextFromMarkdown(help.Points)
 	text.Wrapping = fyne.TextWrapWord
-	box := dialog.NewCustom("点位读取帮助", "关闭", container.NewVScroll(text), d.win)
-	box.Resize(fyne.NewSize(760, 550))
+	box := dialog.NewCustom("OPC UA AI Studio 操作手册", "关闭", container.NewVScroll(text), d.win)
+	box.Resize(fyne.NewSize(900, 680))
 	box.Show()
 }

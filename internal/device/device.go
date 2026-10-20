@@ -33,6 +33,7 @@ type ReadResult struct {
 	DisplayName string    `json:"display_name,omitempty"`
 	Scope       string    `json:"scope,omitempty"`
 	Complete    bool      `json:"scope_complete"`
+	Path        []string  `json:"path,omitempty"` // browse path below the read root, when known
 	NodeAttributes
 }
 

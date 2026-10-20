@@ -17,11 +17,17 @@ import (
 	"opcua-ai-studio/internal/simulator"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
 
-func runSmoke(ctx context.Context, c *service.Controller, capture func() image.Image, export func(io.Writer, string) error, dir string) error {
+// chineseText is written to a String point and must read back and export
+// unchanged, full-width punctuation and symbols included.
+const chineseText = "一号换热站 正常运行，供水温度95℃"
+
+// view sets the result search and switches between the table and the tree.
+func runSmoke(ctx context.Context, c *service.Controller, capture func() image.Image, export func(io.Writer, string) error, view func(search string, tree bool), dir string) error {
 	defer c.Close()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -32,6 +38,16 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 	s := c.Snapshot()
 	if len(s.Results) != 1 || s.Results[0].Value.Integer != "42" {
 		return fmt.Errorf("演示初值错误")
+	}
+	if s.Server == nil || s.Server.Product == "" || !slices.Contains(s.Server.Namespaces, "urn:opcua-ai-studio:demo") {
+		return fmt.Errorf("服务器信息读取失败")
+	}
+	c.SetReference(&service.Point{Address: simulator.CounterNode, Type: "Auto", Count: 1})
+	if err := c.CheckReference(ctx); err != nil {
+		return err
+	}
+	if r := c.Snapshot().Reference; r == nil || r.Quality != "GOOD" {
+		return fmt.Errorf("基准点位检测失败")
 	}
 	p := service.Point{Address: simulator.CounterNode, Type: "Int32", Count: 1}
 	if err := c.Write(ctx, service.WriteRequest{Point: p, Value: "123", Generation: s.Generation}, true); err != nil {
@@ -73,11 +89,29 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 	if s = c.Snapshot(); s.WriteResult == nil || s.WriteResult.State != "CONFIRMED" || s.Readback != "一致" {
 		return fmt.Errorf("中文点位写入/读回验证失败")
 	}
+	message := service.Point{Address: "ns=2;s=Message", Type: "String", Count: 1}
+	if err := c.Write(ctx, service.WriteRequest{Point: message, Value: chineseText, Generation: s.Generation}, true); err != nil {
+		return err
+	}
+	if s = c.Snapshot(); s.WriteResult == nil || s.WriteResult.State != "CONFIRMED" || s.Readback != "一致" {
+		return fmt.Errorf("中文文字写入/读回验证失败")
+	}
 	if err := c.ReadAll(ctx, "ns=2;i=85"); err != nil {
 		return err
 	}
 	if len(c.Snapshot().Results) != 9 {
 		return fmt.Errorf("全量读取没有取得九个演示变量")
+	}
+	for _, r := range c.Snapshot().Results {
+		if len(r.Path) == 0 {
+			return fmt.Errorf("全量读取没有记录浏览路径")
+		}
+	}
+	if err := c.SearchNodes(ctx, "ns=2;i=85", func(n device.Node) bool { return strings.Contains(n.NodeID, "热力站") }); err != nil {
+		return err
+	}
+	if n := len(c.Snapshot().Nodes); n != 3 {
+		return fmt.Errorf("节点搜索找到 %d 个中文点位", n)
 	}
 	if err := c.VerifyPoint(ctx, service.Point{Address: "ns=2;s=Missing", Type: "Auto", Count: 1}); err != nil {
 		return err
@@ -140,10 +174,35 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 			}
 		} else if len(rows) != 11 {
 			return fmt.Errorf("全量结果导出行数错误")
+		} else if !slices.ContainsFunc(rows, func(r []string) bool { return r[1] == message.Address && r[3] == chineseText }) {
+			return fmt.Errorf("中文文字值导出错误")
 		}
 		if err = os.WriteFile(filepath.Join(dir, name), buf.Bytes(), 0644); err != nil {
 			return err
 		}
+	}
+	// The search narrows the table, the tree and the export alike.
+	view("热力站", true)
+	im = capture()
+	if im == nil {
+		return fmt.Errorf("没有树状视图截图")
+	}
+	if f, err = os.Create(filepath.Join(dir, "native-gui-tree.png")); err != nil {
+		return err
+	}
+	err = png.Encode(f, im)
+	if closeErr = f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	var searched bytes.Buffer
+	if err = export(&searched, "全部"); err != nil {
+		return err
+	}
+	if rows, e := csv.NewReader(strings.NewReader(strings.TrimPrefix(searched.String(), string(rune(0xfeff))))).ReadAll(); e != nil || len(rows) != 4 {
+		return fmt.Errorf("搜索结果导出错误: %d 行 %v", len(rows), e)
 	}
 	if err = c.Close(); err != nil {
 		return err

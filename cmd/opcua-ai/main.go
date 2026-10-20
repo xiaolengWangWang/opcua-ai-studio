@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-var version = "0.4.1"
+var version = "0.5.0"
 
 func main() {
 	smokeDir := flag.String("smoke-test", "", "验证自有本机演示并保存 GUI 截图与记录后退出")
@@ -57,7 +57,7 @@ func main() {
 				var exportErr error
 				fyne.DoAndWait(func() { exportErr = d.ExportPointsCSV(out, filter) })
 				return exportErr
-			}, *smokeDir)
+			}, func(search string, tree bool) { fyne.DoAndWait(func() { d.ShowSearch(search, tree) }) }, *smokeDir)
 			result <- err
 			fyne.Do(a.Quit)
 		}()

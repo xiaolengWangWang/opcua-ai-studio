@@ -201,10 +201,10 @@ func TestFiltersFindMissingAndControlPoints(t *testing.T) {
 	}
 	d.resultFilter.SetSelected("不存在")
 	d.table.OnSelected(widget.TableCellID{Row: 0, Col: 0})
-	if d.kind.Selected != "Float" {
-		t.Fatalf("imported type not kept for writing: %s", d.kind.Selected)
+	if d.singleKind.Selected != "Float" {
+		t.Fatalf("imported type not kept for writing: %s", d.singleKind.Selected)
 	}
-	if d.pointCell(0, 1) != "Float" || d.pointStyle(0, 4) != widget.DangerImportance || pointRow(&rr[1])[2] != "读写" {
+	if d.pointCell(0, 2) != "Float" || d.pointStyle(0, 5) != widget.DangerImportance || pointRow(&rr[1])[3] != "读写" {
 		t.Fatal("type or access column missing")
 	}
 }

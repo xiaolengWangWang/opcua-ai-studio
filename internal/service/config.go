@@ -8,7 +8,8 @@ import (
 )
 
 type Config struct {
-	Target string
+	Target        string
+	AutoReconnect bool // reconnect with these settings after the connection is lost
 	opcua.Options
 }
 type Point struct {

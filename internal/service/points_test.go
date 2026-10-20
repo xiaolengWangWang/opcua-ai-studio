@@ -243,13 +243,31 @@ func TestChinesePointsReadWriteAndBrowse(t *testing.T) {
 	if s = c.Snapshot(); s.WriteResult.State != "CONFIRMED" || s.Readback != "一致" {
 		t.Fatalf("write: %+v %s", s.WriteResult, s.Readback)
 	}
+	text := "一号换热站 正常运行，供水温度95℃"
+	if err := c.Write(ctx, WriteRequest{Point: Point{"ns=2;s=Message", "String", 1}, Value: text, Generation: s.Generation}, true); err != nil {
+		t.Fatal(err)
+	}
+	if s = c.Snapshot(); s.WriteResult.State != "CONFIRMED" || s.Readback != "一致" {
+		t.Fatalf("Chinese text: %+v %s", s.WriteResult, s.Readback)
+	}
+	// The server refuses a read-only Chinese point, which keeps its value.
+	if err := c.Write(ctx, WriteRequest{Point: Point{simulator.ChineseNodes[2], "String", 1}, Value: "二号换热站", Generation: s.Generation}, true); err == nil {
+		t.Fatal("read-only point accepted a write")
+	}
+	if s = c.Snapshot(); s.WriteResult.State != "REJECTED" {
+		t.Fatalf("read-only write: %+v", s.WriteResult)
+	}
 	if err := c.ReadAll(ctx, "ns=2;i=85"); err != nil {
 		t.Fatal(err)
 	}
-	names, writable := map[string]string{}, map[string]bool{}
+	names, writable, values := map[string]string{}, map[string]bool{}, map[string]string{}
 	for _, r := range c.Snapshot().Results {
 		names[r.Address.NodeID] = r.DisplayName
 		writable[r.Address.NodeID] = r.Writable()
+		values[r.Address.NodeID] = r.Value.Text
+	}
+	if values["ns=2;s=Message"] != text || values[simulator.ChineseNodes[2]] != "一号换热站" {
+		t.Fatalf("values after writes: %v", values)
 	}
 	if !writable[simulator.ChineseNodes[1]] || writable[simulator.ChineseNodes[0]] || writable[simulator.ChineseNodes[2]] {
 		t.Fatalf("access: %v", writable)
