@@ -35,8 +35,13 @@ func TestParseHostsAndPorts(t *testing.T) {
 			t.Fatalf("%q accepted", bad)
 		}
 	}
-	if nets := opcua.LocalNetworks(); len(nets) == 0 || nets[0] != "127.0.0.1" {
-		t.Fatalf("local networks: %v", nets)
+	for _, n := range opcua.LocalNetworks() {
+		if _, err := opcua.ParseHosts(n.Prefix); err != nil || n.Hosts < 2 || n.Hosts > 1022 {
+			t.Fatalf("local network %+v: %v", n, err)
+		}
+	}
+	if opcua.DefaultHosts(nil) != "127.0.0.1" || opcua.DefaultHosts([]opcua.Network{{Prefix: "172.19.0.0/28", Virtual: true}, {Prefix: "10.3.150.0/23"}}) != "10.3.150.0/23" {
+		t.Fatal("default hosts must skip virtual adapters")
 	}
 }
 
@@ -90,5 +95,31 @@ func TestDiscoveryResultsSortByAddress(t *testing.T) {
 	slices.SortFunc(urls, opcua.CompareURL)
 	if want := "opc.tcp://192.168.1.9:4840,opc.tcp://192.168.1.9:49320,opc.tcp://192.168.1.10:4840,opc.tcp://plc-02:4840"; strings.Join(urls, ",") != want {
 		t.Fatalf("%v", urls)
+	}
+}
+
+// A search of a thousand hosts must finish, paced, with its progress complete;
+// loopback addresses keep it off the network and away from any proxy.
+func TestLargeSearchIsPacedAndFinishes(t *testing.T) {
+	hosts, err := opcua.ParseHosts("127.0.4.0/22")
+	if err != nil || len(hosts) != 1022 {
+		t.Fatalf("%d hosts, %v", len(hosts), err)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	last, started := 0, time.Now()
+	found, err := opcua.Discover(ctx, hosts, []int{port}, 2*time.Second, func(done, total int) { last = done }, nil)
+	elapsed := time.Since(started)
+	if err != nil || len(found) != 0 || last != len(hosts) {
+		t.Fatalf("found %v, progress %d of %d, %v", found, last, len(hosts), err)
+	}
+	if paced := time.Duration(len(hosts)) * time.Second / opcua.DialRate; elapsed < paced*9/10 || elapsed > 20*time.Second {
+		t.Fatalf("%d attempts took %v, paced at %v", len(hosts), elapsed, paced)
 	}
 }

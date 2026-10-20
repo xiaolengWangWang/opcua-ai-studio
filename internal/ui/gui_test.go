@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/widget"
 	"opcua-ai-studio/internal/device"
 	"opcua-ai-studio/internal/service"
@@ -31,9 +33,24 @@ func TestEndpointIsCompletedAndRemembered(t *testing.T) {
 	if got := strings.Join(d.endpointHistory(), ","); got != "opc.tcp://a:4840,opc.tcp://b:4840" {
 		t.Fatalf("history: %s", got)
 	}
-	d.target.SetText("10.0.0.5")
-	if cfg, err := d.config(); err != nil || cfg.Target != "opc.tcp://10.0.0.5:4840" || d.target.Text != cfg.Target {
+	// The address and port fields make the Endpoint; a pasted or chosen
+	// Endpoint fills both, keeping its path.
+	d.host.SetText("10.0.0.5")
+	d.port.SetText("49320")
+	if cfg, err := d.config(); err != nil || cfg.Target != "opc.tcp://10.0.0.5:49320" || d.endpoint() != cfg.Target {
 		t.Fatalf("config: %+v %v", cfg, err)
+	}
+	d.host.SetText("opc.tcp://plc-01:53530/OPCUA/Sim")
+	if d.host.Text != "plc-01" || d.port.Text != "53530" || d.endpoint() != "opc.tcp://plc-01:53530/OPCUA/Sim" {
+		t.Fatalf("pasted endpoint: %q %q %q", d.host.Text, d.port.Text, d.endpoint())
+	}
+	d.host.SetText("10.0.0.6")
+	if d.endpoint() != "opc.tcp://10.0.0.6:53530" {
+		t.Fatalf("a typed address kept the old path: %q", d.endpoint())
+	}
+	d.host.SetText("a:4840")
+	if d.host.Text != "a" || d.port.Text != "4840" || !slices.Contains(historyOptions([]string{"opc.tcp://a:4840"}), "a:4840") {
+		t.Fatalf("recent endpoint option: %q %q", d.host.Text, d.port.Text)
 	}
 }
 
@@ -113,5 +130,77 @@ func TestPacketsFilterSearchAndStats(t *testing.T) {
 	}
 	if detail := packetDetail(d.packets[0]); !strings.Contains(detail, "ns=2;s=Counter → GOOD = 42（Int32）") {
 		t.Fatalf("detail: %s", detail)
+	}
+}
+
+func TestMenuMirrorsButtonsAndToggles(t *testing.T) {
+	d := searchDesktop(t)
+	names := map[string]*fyne.MenuItem{}
+	for _, m := range d.mainMenu.Items {
+		for _, mi := range m.Items {
+			names[m.Label+"/"+mi.Label] = mi
+		}
+	}
+	for _, want := range []string{"文件/导出 CSV…", "连接/搜索服务器…", "连接/连接数测试…", "读取/全量读取", "视图/趋势视图", "帮助/检查更新", "文件/退出"} {
+		if names[want] == nil {
+			t.Fatalf("menu item %s missing", want)
+		}
+	}
+	d.controls()
+	if names["连接/断开"].Disabled != d.disconnectBtn.Disabled() || names["读取/停止读取"].Disabled != d.stopReadBtn.Disabled() {
+		t.Fatal("menu does not mirror the buttons")
+	}
+	names["视图/卡片视图"].Action()
+	if d.viewMode.Selected != "卡片" || !d.cards.Visible() || d.table.Visible() || !names["视图/卡片视图"].Checked {
+		t.Fatal("view menu")
+	}
+	names["连接/连接后自动全量读取"].Action()
+	if !d.autoFullRead.Checked || !names["连接/连接后自动全量读取"].Checked {
+		t.Fatal("toggle menu")
+	}
+	names["视图/显示左侧操作栏"].Action()
+	if d.split.Offset > 0.02 || names["视图/显示左侧操作栏"].Checked {
+		t.Fatal("side column not folded")
+	}
+}
+
+func TestTrendViewKeepsHistoryPerPoint(t *testing.T) {
+	d := searchDesktop(t)
+	d.viewMode.SetSelected("趋势")
+	rr := d.snapshot.Results
+	for i := 0; i < 3; i++ {
+		rr = append([]device.ReadResult(nil), rr...)
+		rr[0].Value = device.Value{Type: "Double", Real: 90 + float64(i)}
+		d.refresh(service.Snapshot{Revision: uint64(400 + i), State: "connected", Results: rr})
+	}
+	if h := d.history["ns=2;s=热力站.一次供水温度"]; len(h) != 4 || h[3] != 92 {
+		t.Fatalf("history: %v", h)
+	}
+	if len(d.history["ns=2;s=热力站.一次回水温度"]) != 0 {
+		t.Fatal("BAD point recorded")
+	}
+	// The trend shows the numeric points: the temperature and the counter.
+	if len(d.trendRows) != 2 || !d.trends.Visible() {
+		t.Fatalf("trend rows: %v", d.trendRows)
+	}
+	d.refresh(service.Snapshot{Revision: 410, State: "connected", Results: rr})
+	if len(d.history["ns=2;s=热力站.一次供水温度"]) != 4 {
+		t.Fatal("an unchanged list added a sample")
+	}
+}
+
+func TestWriteButtonFollowsTheChosenPoint(t *testing.T) {
+	d := searchDesktop(t)
+	d.controls()
+	if !d.writeSelectedBtn.Disabled() {
+		t.Fatal("write enabled without a chosen point")
+	}
+	d.selectResult(d.snapshot.Results[2])
+	if d.writeSelectedBtn.Disabled() {
+		t.Fatal("control point not writable from the results")
+	}
+	d.selectResult(d.snapshot.Results[0])
+	if !d.writeSelectedBtn.Disabled() {
+		t.Fatal("read-only point offered for writing")
 	}
 }

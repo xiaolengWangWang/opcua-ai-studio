@@ -52,7 +52,7 @@ func (d *Desktop) applyProfile(name string) {
 		if p.Name != name {
 			continue
 		}
-		d.target.SetText(p.Endpoint)
+		d.setEndpoint(p.Endpoint)
 		d.policy.SetSelected(or(p.Policy, "None"))
 		d.mode.SetSelected(or(p.Mode, "None"))
 		d.timeout.SetText(or(p.Timeout, "5s"))
@@ -74,7 +74,7 @@ func (d *Desktop) saveProfileDialog() {
 	name := widget.NewEntry()
 	name.SetText(d.profile.Selected)
 	if name.Text == "" {
-		if u, err := url.Parse(strings.TrimSpace(d.target.Text)); err == nil {
+		if u, err := url.Parse(normalizeEndpoint(d.endpoint())); err == nil {
 			name.SetText(u.Host)
 		}
 	}
@@ -83,7 +83,7 @@ func (d *Desktop) saveProfileDialog() {
 		if !ok || n == "" {
 			return
 		}
-		p := profile{Name: n, Endpoint: strings.TrimSpace(d.target.Text), Policy: d.policy.Selected, Mode: d.mode.Selected, Timeout: d.timeout.Text, Username: d.username.Text, Cert: d.cert.Text, Key: d.key.Text, ServerCert: d.serverCert.Text, AutoReconnect: d.autoReconnect.Checked}
+		p := profile{Name: n, Endpoint: normalizeEndpoint(d.endpoint()), Policy: d.policy.Selected, Mode: d.mode.Selected, Timeout: d.timeout.Text, Username: d.username.Text, Cert: d.cert.Text, Key: d.key.Text, ServerCert: d.serverCert.Text, AutoReconnect: d.autoReconnect.Checked}
 		pp := slices.DeleteFunc(d.profiles(), func(q profile) bool { return q.Name == n })
 		d.storeProfiles(append(pp, p), n)
 	}, d.win)
@@ -146,17 +146,36 @@ func (d *Desktop) serverSearchDialog() {
 		return
 	}
 	prefs := d.app.Preferences()
-	hosts := widget.NewMultiLineEntry()
-	hosts.SetMinRowsVisible(2)
-	hosts.Wrapping = fyne.TextWrapWord
-	hosts.SetText(prefs.StringWithFallback("scan-hosts", strings.Join(opcua.LocalNetworks(), ", ")))
+	hosts := widget.NewEntry()
+	hosts.SetPlaceHolder("例如 192.168.1.10，或 192.168.1.10-50、192.168.1.0/24，逗号分隔")
 	ports := widget.NewEntry()
 	ports.SetText(prefs.StringWithFallback("scan-ports", opcua.DefaultPorts))
-	reset := widget.NewButtonWithIcon("恢复默认", theme.HistoryIcon(), func() {
-		hosts.SetText(strings.Join(opcua.LocalNetworks(), ", "))
-		ports.SetText(opcua.DefaultPorts)
+	// The search starts on this computer's own network: scanning through a
+	// VPN or proxy adapter floods that software and can stall the computer.
+	nets := opcua.LocalNetworks()
+	scopes, prefixes := scopeOptions(nets)
+	const custom = "指定 IP 或网段"
+	scope := widget.NewSelect(append(scopes, "仅本机 127.0.0.1", custom), func(choice string) {
+		switch choice {
+		case custom:
+			hosts.SetText(prefs.String("scan-custom-hosts"))
+			hosts.Enable()
+			d.win.Canvas().Focus(hosts)
+		case "仅本机 127.0.0.1":
+			hosts.SetText("127.0.0.1")
+			hosts.Disable()
+		default:
+			hosts.SetText(prefixes[choice])
+			hosts.Disable()
+		}
 	})
-	status := widget.NewLabel("填写主机、IP、网段（如 192.168.1.0/24）或范围（如 192.168.1.10-50），逗号分隔。")
+	if len(scopes) > 0 {
+		scope.SetSelected(scopes[0])
+	} else {
+		scope.SetSelected("仅本机 127.0.0.1")
+	}
+	reset := widget.NewButtonWithIcon("恢复默认端口", theme.HistoryIcon(), func() { ports.SetText(opcua.DefaultPorts) })
+	status := widget.NewLabel("默认搜索本机所在网段；选择“指定 IP 或网段”可只搜索某台主机。")
 	status.Wrapping = fyne.TextWrapWord
 	bar := widget.NewProgressBar()
 	bar.Hide()
@@ -167,7 +186,7 @@ func (d *Desktop) serverSearchDialog() {
 			return
 		}
 		f := found[i]
-		d.target.SetText(f.URL)
+		d.setEndpoint(f.URL)
 		d.profile.ClearSelected()
 		if len(f.Endpoints) > 0 {
 			best := f.Endpoints[0]
@@ -229,7 +248,9 @@ func (d *Desktop) serverSearchDialog() {
 		if err == nil {
 			var pp []int
 			if pp, err = opcua.ParsePorts(ports.Text); err == nil {
-				prefs.SetString("scan-hosts", hosts.Text)
+				if scope.Selected == custom {
+					prefs.SetString("scan-custom-hosts", hosts.Text)
+				}
 				prefs.SetString("scan-ports", ports.Text)
 				found = nil
 				list.Refresh()
@@ -245,7 +266,7 @@ func (d *Desktop) serverSearchDialog() {
 		status.SetText(err.Error())
 	})
 	search.Importance = widget.HighImportance
-	form := widget.NewForm(widget.NewFormItem("主机 / 网段", hosts), widget.NewFormItem("端口", ports))
+	form := widget.NewForm(widget.NewFormItem("搜索范围", scope), widget.NewFormItem("主机 / 网段", hosts), widget.NewFormItem("端口", ports))
 	top := container.NewVBox(form, container.NewBorder(nil, nil, nil, container.NewHBox(reset, search), bar), status)
 	box = dialog.NewCustom("搜索 OPC UA 服务器", "关闭", container.NewBorder(top, nil, nil, nil, list), d.win)
 	box.SetOnClosed(func() {
@@ -255,6 +276,24 @@ func (d *Desktop) serverSearchDialog() {
 	})
 	box.Resize(fyne.NewSize(900, 580))
 	box.Show()
+}
+
+// scopeOptions names this computer's networks for the search range, its own
+// network first; virtual adapters are marked, as they may lead into a VPN.
+func scopeOptions(nets []opcua.Network) (options []string, prefixes map[string]string) {
+	prefixes = map[string]string{}
+	for _, n := range nets {
+		label := fmt.Sprintf("网卡 %s · %s（%d 台）", n.Interface, n.Prefix, n.Hosts)
+		switch {
+		case n.Primary:
+			label = fmt.Sprintf("本机网段 · %s · %s（%d 台）", n.Interface, n.Prefix, n.Hosts)
+		case n.Virtual:
+			label = fmt.Sprintf("虚拟网卡 %s · %s（%d 台，可能经过 VPN 或代理）", n.Interface, n.Prefix, n.Hosts)
+		}
+		options = append(options, label)
+		prefixes[label] = n.Prefix
+	}
+	return options, prefixes
 }
 
 // startServerSearch runs one discovery, showing each server as it is found;
@@ -274,7 +313,10 @@ func (d *Desktop) startServerSearch(hosts []string, ports []int, timeout time.Du
 	bar.SetValue(0)
 	bar.Show()
 	total := len(hosts) * len(ports)
-	status.SetText(fmt.Sprintf("正在搜索 %d 台主机的 %d 个端口……", len(hosts), len(ports)))
+	// Connections are paced and closed ports wait for the connect timeout,
+	// so the worst case is known in advance.
+	estimate := max(float64(total)/opcua.DialRate, float64(total)/opcua.ScanWorkers*opcua.ConnectTimeout.Seconds())
+	status.SetText(fmt.Sprintf("正在搜索 %d 台主机的 %d 个端口，共 %d 个地址，最长约 %.0f 秒……", len(hosts), len(ports), total, estimate))
 	var last time.Time
 	count := 0
 	go func() {
@@ -341,7 +383,17 @@ func (d *Desktop) rememberEndpoint(target string) {
 	list := append([]string{target}, slices.DeleteFunc(d.endpointHistory(), func(s string) bool { return s == target })...)
 	list = list[:min(len(list), 10)]
 	d.app.Preferences().SetString("endpoint-history", strings.Join(list, "\n"))
-	d.target.SetOptions(list)
+	d.host.SetOptions(historyOptions(list))
+}
+
+// historyOptions shows recent Endpoints as host:port, which the address field
+// splits back into the address and port when one is chosen.
+func historyOptions(list []string) []string {
+	out := make([]string, len(list))
+	for i, e := range list {
+		out[i] = strings.TrimPrefix(e, "opc.tcp://")
+	}
+	return out
 }
 
 // serverInfoText formats the connected server's information for reading and copying.

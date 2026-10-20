@@ -4,17 +4,54 @@ import (
 	"context"
 	"fmt"
 	"opcua-ai-studio/internal/device"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
 
+// namespaceOnly is a parent given as a namespace alone, ns=2, also typed with
+// a full-width ＝: the namespace's nodes below Objects.
+var namespaceOnly = regexp.MustCompile(`^\s*ns[=＝]([0-9]{1,5})\s*$`)
+
+// readScope reads a browse or read parent: a NodeID, or a namespace alone, which
+// starts at Objects and keeps to that namespace's nodes. keep is nil for a
+// NodeID.
+func readScope(text string) (root string, keep func(device.Node) bool, err error) {
+	if m := namespaceOnly.FindStringSubmatch(text); m != nil {
+		ns, _ := strconv.Atoi(m[1])
+		return "i=85", func(n device.Node) bool { return namespaceOf(n.NodeID) == ns }, nil
+	}
+	a, err := device.ParseAddress(text, "Auto", 1)
+	return a.NodeID, nil, err
+}
+
+// namespaceOf is a NodeID's namespace index, 0 when it names none.
+func namespaceOf(nodeID string) int {
+	if rest, ok := strings.CutPrefix(nodeID, "ns="); ok {
+		if i := strings.IndexByte(rest, ';'); i > 0 {
+			n, _ := strconv.Atoi(rest[:i])
+			return n
+		}
+	}
+	return 0
+}
+
 func (c *Controller) Browse(ctx context.Context, node string) error {
+	root, keep, err := readScope(node)
+	if err != nil {
+		return err
+	}
 	s, ctx, done, err := c.acquire(ctx, 0)
 	if err != nil {
 		return err
 	}
 	defer done()
-	nodes, err := s.d.Browse(ctx, node)
+	nodes, err := s.d.Browse(ctx, root)
+	if keep != nil {
+		nodes = slices.DeleteFunc(nodes, func(n device.Node) bool { return !keep(n) })
+	}
 	c.mu.Lock()
 	if c.s == s && !c.closed {
 		c.snap.Nodes = nodes
@@ -49,8 +86,9 @@ func nodeName(n device.Node) string {
 // walk browses level by level below level, many nodes per request, so 50000
 // variables take hundreds of round trips rather than one per node. It calls
 // visit once for each Object or Variable not yet seen, with its parent, and
-// progress after each request.
-func walk(ctx context.Context, d device.Driver, level []string, seen map[string]bool, visit func(parent string, n device.Node) error, progress func()) error {
+// progress after each request; a node keep rejects is neither visited nor
+// browsed, keep being nil for every node.
+func walk(ctx context.Context, d device.Driver, level []string, seen map[string]bool, keep func(device.Node) bool, visit func(parent string, n device.Node) error, progress func()) error {
 	var err error
 	for len(level) > 0 && err == nil {
 		var next []string
@@ -73,7 +111,7 @@ func walk(ctx context.Context, d device.Driver, level []string, seen map[string]
 					if e != nil {
 						return 0, e
 					}
-					if n.NodeID = a.NodeID; seen[n.NodeID] {
+					if n.NodeID = a.NodeID; seen[n.NodeID] || keep != nil && !keep(n) {
 						continue
 					}
 					if len(seen) >= maxNodes {
@@ -97,7 +135,7 @@ func walk(ctx context.Context, d device.Driver, level []string, seen map[string]
 // SearchNodes lists the objects and variables below root that match, in
 // place of the browse list, so they can be selected and read.
 func (c *Controller) SearchNodes(ctx context.Context, root string, match func(device.Node) bool) error {
-	a, err := device.ParseAddress(root, "Auto", 1)
+	start, keep, err := readScope(root)
 	if err != nil {
 		return err
 	}
@@ -118,7 +156,7 @@ func (c *Controller) SearchNodes(ctx context.Context, root string, match func(de
 		c.mu.Unlock()
 	}
 	var reported time.Time
-	err = walk(ctx, s.d, []string{a.NodeID}, map[string]bool{a.NodeID: true}, func(_ string, n device.Node) error {
+	err = walk(ctx, s.d, []string{start}, map[string]bool{start: true}, keep, func(_ string, n device.Node) error {
 		visited++
 		if match(n) {
 			found = append(found, n)
@@ -130,7 +168,7 @@ func (c *Controller) SearchNodes(ctx context.Context, root string, match func(de
 			publish(fmt.Sprintf("搜索中 · 已浏览 %d 个节点，找到 %d 个", visited, len(found)))
 		}
 	})
-	status := fmt.Sprintf("搜索完成 · 在 %s 下浏览 %d 个节点，找到 %d 个", a.NodeID, visited, len(found))
+	status := fmt.Sprintf("搜索完成 · 在 %s 下浏览 %d 个节点，找到 %d 个", root, visited, len(found))
 	if err != nil {
 		status = fmt.Sprintf("搜索未完成（已浏览 %d 个节点，找到 %d 个）：%v", visited, len(found), err)
 	}

@@ -202,6 +202,7 @@ func (d *Desktop) refreshPointRows() {
 		}
 	}
 	d.trackChanges(rr)
+	d.recordHistory(rr)
 	if d.sortCol >= 0 {
 		d.sortVisible()
 	}
@@ -213,23 +214,38 @@ func (d *Desktop) refreshPointRows() {
 		d.emptyHint.Hide()
 	}
 	d.refreshTree()
+	d.refreshViews()
 	d.refreshSingleOptions()
 	total := fmt.Sprintf("共 %d", len(rr))
 	if len(d.visible) != len(rr) {
 		total = fmt.Sprintf("显示 %d / 共 %d", len(d.visible), len(rr))
 	}
 	sep := summarySegment("  ·  ", theme.ColorNamePlaceHolder)
-	d.pointSummary.Segments = []widget.RichTextSegment{
+	// 共, GOOD and BAD always show; the rarer counts only when not zero, so
+	// the summary stays on one line above the data.
+	d.summaryBase = []widget.RichTextSegment{
 		summarySegment(total, theme.ColorNameForeground), sep,
 		summarySegment(fmt.Sprintf("GOOD %d", counts["GOOD"]), theme.ColorNameSuccess), sep,
-		summarySegment(fmt.Sprintf("BAD %d", counts["BAD"]), theme.ColorNameError), sep,
-		summarySegment(fmt.Sprintf("UNCERTAIN %d", counts["UNCERTAIN"]), theme.ColorNameWarning), sep,
-		summarySegment(fmt.Sprintf("不存在 %d", counts["MISSING"]), theme.ColorNameError), sep,
-		summarySegment(fmt.Sprintf("可写 %d", counts["WRITABLE"]), theme.ColorNamePrimary), sep,
-		summarySegment(fmt.Sprintf("含中文 %d", counts["CHINESE"]), theme.ColorNameForeground), sep,
-		summarySegment(fmt.Sprintf("请求失败 %d / 解析或类型错误 %d / 未读 %d", counts["REQUEST_FAILED"], counts["PARSE_FAILED"]+counts["TYPE_MISMATCH"], counts["NOT_READ"]), theme.ColorNamePlaceHolder),
+		summarySegment(fmt.Sprintf("BAD %d", counts["BAD"]), theme.ColorNameError),
 	}
-	d.pointSummary.Refresh()
+	for _, c := range []struct {
+		name  string
+		n     int
+		color fyne.ThemeColorName
+	}{
+		{"UNCERTAIN", counts["UNCERTAIN"], theme.ColorNameWarning},
+		{"不存在", counts["MISSING"], theme.ColorNameError},
+		{"可写", counts["WRITABLE"], theme.ColorNamePrimary},
+		{"含中文", counts["CHINESE"], theme.ColorNameForeground},
+		{"请求失败", counts["REQUEST_FAILED"], theme.ColorNameError},
+		{"解析或类型错误", counts["PARSE_FAILED"] + counts["TYPE_MISMATCH"], theme.ColorNameWarning},
+		{"未读", counts["NOT_READ"], theme.ColorNamePlaceHolder},
+	} {
+		if c.n > 0 {
+			d.summaryBase = append(d.summaryBase, sep, summarySegment(fmt.Sprintf("%s %d", c.name, c.n), c.color))
+		}
+	}
+	d.updateSummary()
 	if d.jobFollow && len(rr) > 0 {
 		d.jobBar.SetValue(1 - float64(counts["NOT_READ"])/float64(len(rr)))
 	}
@@ -241,6 +257,30 @@ type pointsKey struct {
 	first    *device.ReadResult
 	sortCol  int
 	sortDesc bool
+}
+
+// updateSummary shows the counts and, on the same line, the latest read
+// status, so both take one row above the data.
+func (d *Desktop) updateSummary() {
+	segments := append([]widget.RichTextSegment(nil), d.summaryBase...)
+	if s := d.snapshot.ScanStatus; s != "" {
+		segments = append(segments, summarySegment("  |  "+s, theme.ColorNamePlaceHolder))
+	}
+	d.pointSummary.Segments = segments
+	d.pointSummary.Refresh()
+}
+
+// selectedResult is the result last chosen in a view, if it is still shown.
+func (d *Desktop) selectedResult() (device.ReadResult, bool) {
+	if d.selectedNode == "" {
+		return device.ReadResult{}, false
+	}
+	for i := range d.snapshot.Results {
+		if d.snapshot.Results[i].Address.NodeID == d.selectedNode {
+			return d.snapshot.Results[i], true
+		}
+	}
+	return device.ReadResult{}, false
 }
 
 // changeHighlight is how long a changed value stays marked; values are

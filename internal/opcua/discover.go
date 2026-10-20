@@ -25,9 +25,12 @@ const DefaultPorts = "4840, 4841, 4862, 4890, 48010, 49320, 53530, 62541"
 const (
 	maxScanHosts   = 4096
 	maxScanTargets = 40000
-	scanWorkers    = 512
+	ScanWorkers    = 256
 	probeWorkers   = 32
-	connectTimeout = 500 * time.Millisecond
+	ConnectTimeout = 500 * time.Millisecond
+	// DialRate paces connection attempts, so a large search does not flood
+	// the network stack, a proxy or the endpoint security software.
+	DialRate = 800
 )
 
 // Found is an OPC UA server found by Discover.
@@ -39,28 +42,84 @@ type Found struct {
 	Error     string // why the endpoints of a registered server could not be read
 }
 
-// LocalNetworks lists this computer, then the /24 network of each active IPv4
-// interface; a larger network would take long to scan.
-func LocalNetworks() []string {
-	out := []string{"127.0.0.1"}
+// Network is an IPv4 network of this computer to search.
+type Network struct {
+	Interface string
+	Prefix    string // such as 10.3.150.0/23, or this computer's address alone
+	Hosts     int
+	Primary   bool // the network of the default route
+	Virtual   bool // a VPN, proxy tunnel or virtual machine adapter
+}
+
+// virtualNames mark adapters whose addresses lead into a VPN, a proxy tunnel
+// or a virtual machine: scanning through them floods that software.
+var virtualNames = []string{"tun", "tap", "vpn", "wireguard", "zerotier", "tailscale", "oray", "vethernet", "vmware", "virtualbox", "hyper-v", "wsl", "docker", "loopback", "bluetooth", "蓝牙"}
+
+// maxLocalBits bounds a local network to /22, 1022 hosts; a larger one is
+// searched as the /24 around this computer.
+const maxLocalBits = 22
+
+// LocalNetworks lists this computer's IPv4 networks with their real masks,
+// the default route's first; link-local addresses and /31 or /32 routes,
+// which VPNs use, are left out.
+func LocalNetworks() []Network {
+	primary := ""
+	// No packet is sent: the system only picks the route to the address.
+	if c, err := net.Dial("udp4", "8.8.8.8:80"); err == nil {
+		primary = c.LocalAddr().(*net.UDPAddr).IP.String()
+		c.Close()
+	}
+	var out []Network
 	ifaces, _ := net.Interfaces()
 	for _, i := range ifaces {
 		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
 			continue
 		}
+		name := strings.ToLower(i.Name)
+		virtual := slices.ContainsFunc(virtualNames, func(v string) bool { return strings.Contains(name, v) })
 		addrs, _ := i.Addrs()
 		for _, a := range addrs {
 			n, ok := a.(*net.IPNet)
 			if !ok || n.IP.To4() == nil || n.IP.IsLinkLocalUnicast() {
 				continue
 			}
-			p, _ := netip.AddrFromSlice(n.IP.To4())
-			if s := netip.PrefixFrom(p, 24).Masked().String(); !slices.Contains(out, s) {
-				out = append(out, s)
+			ip, _ := netip.AddrFromSlice(n.IP.To4())
+			bits, _ := n.Mask.Size()
+			if bits > 30 {
+				continue
 			}
+			if bits < maxLocalBits {
+				bits = 24
+			}
+			p := netip.PrefixFrom(ip, bits).Masked()
+			out = append(out, Network{Interface: i.Name, Prefix: p.String(), Hosts: 1<<(32-bits) - 2, Primary: ip.String() == primary && !virtual, Virtual: virtual})
 		}
 	}
+	// The default route's network first, then real adapters, then virtual ones.
+	slices.SortStableFunc(out, func(a, b Network) int {
+		rank := func(n Network) int {
+			switch {
+			case n.Primary:
+				return 0
+			case !n.Virtual:
+				return 1
+			}
+			return 2
+		}
+		return rank(a) - rank(b)
+	})
 	return out
+}
+
+// DefaultHosts is the network a search starts with: the default route's, else
+// the first real adapter's, else this computer alone.
+func DefaultHosts(nets []Network) string {
+	for _, n := range nets {
+		if !n.Virtual {
+			return n.Prefix
+		}
+	}
+	return "127.0.0.1"
 }
 
 func splitList(text string) []string {
@@ -179,8 +238,8 @@ func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Dur
 	}
 	// A closed or filtered port should not hold a worker for the full timeout;
 	// a LAN host answers a connect within milliseconds.
-	connect := min(timeout, connectTimeout)
-	var mu sync.Mutex
+	connect := min(timeout, ConnectTimeout)
+	var mu, pmu sync.Mutex
 	var servers []Found
 	seen := map[string]bool{}
 	done, total := 0, len(hosts)*len(ports)
@@ -199,7 +258,7 @@ func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Dur
 		}
 	}
 	// Endpoints are read while the scan goes on, so servers show up at once.
-	opened := make(chan string, scanWorkers)
+	opened := make(chan string, ScanWorkers)
 	var registered []string
 	var probes sync.WaitGroup
 	for range probeWorkers {
@@ -230,7 +289,7 @@ func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Dur
 	}
 	targets := make(chan string)
 	var scans sync.WaitGroup
-	for range min(scanWorkers, total) {
+	for range min(ScanWorkers, total) {
 		scans.Go(func() {
 			dialer := net.Dialer{Timeout: connect}
 			for addr := range targets {
@@ -243,19 +302,28 @@ func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Dur
 					mu.Unlock()
 					opened <- u
 				}
-				mu.Lock()
+				// Progress has its own lock: a slow callback must not hold up
+				// the servers being recorded.
+				pmu.Lock()
 				done++
 				if progress != nil {
 					progress(done, total)
 				}
-				mu.Unlock()
+				pmu.Unlock()
 			}
 		})
 	}
 	// Port by port, so the usual 4840 servers on every host come first.
+	pace := time.NewTicker(time.Second / DialRate)
+	defer pace.Stop()
 feed:
 	for _, p := range ports {
 		for _, h := range hosts {
+			select {
+			case <-pace.C:
+			case <-ctx.Done():
+				break feed
+			}
 			select {
 			case targets <- net.JoinHostPort(h, strconv.Itoa(p)):
 			case <-ctx.Done():

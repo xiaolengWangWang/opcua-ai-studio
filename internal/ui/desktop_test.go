@@ -15,7 +15,7 @@ func TestDesktopDefaultsAndCredentialsAreNotSaved(t *testing.T) {
 	if d.allowWrite.Checked || !d.writeBtn.Disabled() {
 		t.Fatal("writes must start disabled")
 	}
-	d.target.SetText("opc.tcp://127.0.0.1:4840")
+	d.setEndpoint("opc.tcp://127.0.0.1:4840")
 	d.password.SetText("test-password")
 	d.writeValue.SetText("123")
 	d.allowWrite.SetChecked(true)

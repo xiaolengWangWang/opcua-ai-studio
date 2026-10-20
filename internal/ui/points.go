@@ -24,11 +24,11 @@ func (d *Desktop) ExportPointsCSV(out io.Writer, filter string) error {
 	return exportPointsCSV(context.Background(), out, d.snapshot, q, nil)
 }
 
-// ShowSearch sets the result search and shows the table or the tree, as the
-// smoke test captures them; a tab index of 2 shows the communication tab.
-func (d *Desktop) ShowSearch(search string, tree bool, tab int) {
+// ShowSearch sets the result search, the view (表格, 树状, 卡片 or 趋势) and
+// the tab, as the smoke test captures them; tab 2 is the communication tab.
+func (d *Desktop) ShowSearch(search, view string, tab int) {
 	d.search.SetText(search)
-	d.viewMode.SetSelected(map[bool]string{false: "表格", true: "树状"}[tree])
+	d.viewMode.SetSelected(view)
 	d.tabs.SelectIndex(tab)
 }
 

@@ -9,6 +9,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"image/color"
+	"net"
+	"net/url"
 	"opcua-ai-studio/internal/device"
 	"opcua-ai-studio/internal/opcua"
 	"opcua-ai-studio/internal/simulator"
@@ -16,12 +18,17 @@ import (
 	"time"
 )
 
-// connectionPanel is two rows: a saved connection, the Endpoint and the
-// connect action; then the security summary, which opens the security
-// settings, and the less frequent tools, the rarest behind a menu.
+// connectionPanel is the single top bar: a saved connection, the address and
+// port, the connection settings, the server search and connect or disconnect,
+// then the status. The rarer connection actions live in the 连接 menu; their
+// buttons are kept for the menu and are not placed.
 func (d *Desktop) connectionPanel() fyne.CanvasObject {
-	d.target = widget.NewSelectEntry(nil)
-	d.target.SetPlaceHolder("opc.tcp://192.168.1.10:4840，可只填 IP；下拉为最近连接")
+	d.host = widget.NewSelectEntry(nil)
+	d.host.SetPlaceHolder("IP 地址或主机名，如 192.168.1.10；下拉为最近连接")
+	d.host.OnChanged = d.hostChanged
+	d.port = widget.NewEntry()
+	d.port.SetPlaceHolder("4840")
+	d.port.SetText("4840")
 	connect := func() {
 		cfg, err := d.config()
 		if err != nil {
@@ -33,9 +40,13 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 		d.run(func(ctx context.Context) error { return d.controller.Connect(ctx, cfg) }, func() {
 			d.saveInputs()
 			d.rememberEndpoint(cfg.Target)
+			if d.autoFullRead.Checked {
+				d.startFullRead(d.allRoot.Text)
+			}
 		})
 	}
-	d.target.OnSubmitted = func(string) { connect() }
+	d.host.OnSubmitted = func(string) { connect() }
+	d.port.OnSubmitted = func(string) { connect() }
 	d.connectBtn = widget.NewButtonWithIcon("连接", theme.LoginIcon(), connect)
 	d.connectBtn.Importance = widget.HighImportance
 	d.disconnectBtn = widget.NewButtonWithIcon("断开", theme.LogoutIcon(), func() {
@@ -46,14 +57,14 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 		d.allowWrite.SetChecked(false)
 		d.loadReference(demoReference)
 		d.run(d.controller.StartDemo, func() {
-			d.target.SetText(d.controller.Snapshot().DemoTarget)
+			d.setEndpoint(d.controller.Snapshot().DemoTarget)
 			d.profile.ClearSelected()
 			d.policy.SetSelected("None")
 			d.mode.SetSelected("None")
 			d.addresses.SetText(strings.Join(append([]string{simulator.CounterNode}, simulator.ChineseNodes...), "\n"))
 			d.singleNode.SetText(simulator.CounterNode)
-			d.allRoot.SetText("ns=2;i=85")
-			d.browseRoot.SetText("ns=2;i=85")
+			d.allRoot.SetText("ns=2")
+			d.browseRoot.SetText("ns=2")
 			d.kind.SetSelected("Auto")
 			d.count.SetText("1")
 			d.singleKind.SetSelected("Int32")
@@ -90,31 +101,34 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 	d.mode = widget.NewSelect([]string{"None", "Sign", "SignAndEncrypt"}, nil)
 	d.mode.SetSelected("None")
 	security := container.NewGridWithColumns(2, widget.NewForm(widget.NewFormItem("安全策略", d.policy), widget.NewFormItem("安全模式", d.mode), widget.NewFormItem("超时", d.timeout), widget.NewFormItem("用户名", d.username), widget.NewFormItem("密码", d.password)), widget.NewForm(widget.NewFormItem("客户端证书", d.cert), widget.NewFormItem("客户端私钥", d.key), widget.NewFormItem("可信服务器证书", d.serverCert)))
-	d.securityBox = container.NewVBox(widget.NewSeparator(), security)
-	d.securityBox.Hide()
-	d.securityBtn = widget.NewButtonWithIcon("", theme.MenuExpandIcon(), func() { d.showSecurity(!d.securityBox.Visible()) })
-	d.securityBtn.Importance = widget.LowImportance
-	d.securityBtn.Alignment = widget.ButtonAlignLeading
+	d.autoReconnect = widget.NewCheck("断线自动重连", func(bool) { d.updateMenu() })
+	d.autoReconnect.SetChecked(true)
+	d.autoFullRead = widget.NewCheck("连接后自动全量读取", func(bool) { d.updateMenu() })
+	d.settings = d.settingsDialog(security)
+	d.securityBtn = widget.NewButtonWithIcon("", theme.SettingsIcon(), func() { d.showSecurity(true) })
 	summary := func(string) { d.updateSecuritySummary() }
 	d.policy.OnChanged, d.mode.OnChanged, d.username.OnChanged = summary, summary, summary
-	d.updateSecuritySummary()
 	d.probeBtn = widget.NewButtonWithIcon("连接数测试", theme.ComputerIcon(), d.probeSessionsDialog)
 	d.serverInfoBtn = widget.NewButtonWithIcon("服务器信息", theme.InfoIcon(), d.serverInfoDialog)
-	d.autoReconnect = widget.NewCheck("断线自动重连", nil)
-	d.autoReconnect.SetChecked(true)
 	d.profile = widget.NewSelect(nil, d.applyProfile)
-	d.profile.PlaceHolder = "选择已保存的连接"
+	d.profile.PlaceHolder = "已保存的连接"
 	d.saveProfileBtn = widget.NewButtonWithIcon("保存配置", theme.DocumentSaveIcon(), d.saveProfileDialog)
 	d.deleteProfileBtn = widget.NewButtonWithIcon("删除配置", theme.DeleteIcon(), d.deleteProfile)
-	d.moreBtn = widget.NewButtonWithIcon("", theme.MoreHorizontalIcon(), d.showConnectionMenu)
-	profile := container.NewGridWrap(fyne.NewSize(210, d.profile.MinSize().Height), d.profile)
-	row := container.NewBorder(nil, nil, profile, container.NewHBox(d.scanBtn, d.discoverBtn, d.connectBtn, d.disconnectBtn), d.target)
-	options := container.NewBorder(nil, nil, container.NewHBox(d.securityBtn, d.autoReconnect), container.NewHBox(d.saveProfileBtn, d.serverInfoBtn, d.demoBtn, d.stopDemoBtn, d.moreBtn))
-	return container.NewVBox(row, options, d.securityBox)
+	d.updateSecuritySummary()
+	small := func(text string) *widget.Label {
+		return widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	}
+	h := d.profile.MinSize().Height
+	profile := container.NewGridWrap(fyne.NewSize(170, h), d.profile)
+	port := container.NewGridWrap(fyne.NewSize(76, h), d.port)
+	d.status.Truncation = fyne.TextTruncateEllipsis
+	status := container.NewGridWrap(fyne.NewSize(230, h), d.status)
+	return container.NewBorder(nil, nil, container.NewHBox(profile, small("地址")),
+		container.NewHBox(small("端口"), port, d.securityBtn, d.scanBtn, d.connectBtn, d.disconnectBtn, d.refBox, d.activity, status, d.updateBtn), d.host)
 }
 
-// updateSecuritySummary names the security in force on the toggle that shows
-// the security settings, so most connections need not open them.
+// updateSecuritySummary names the security in force at the top of the
+// settings dialog.
 func (d *Desktop) updateSecuritySummary() {
 	if d.securityBtn == nil || d.policy == nil || d.mode == nil || d.username == nil {
 		return
@@ -123,27 +137,65 @@ func (d *Desktop) updateSecuritySummary() {
 	if u := strings.TrimSpace(d.username.Text); u != "" {
 		auth = "用户 " + u
 	}
-	d.securityBtn.SetText(fmt.Sprintf("安全与认证：%s / %s · %s", d.policy.Selected, d.mode.Selected, auth))
+	d.securitySummary = fmt.Sprintf("%s / %s · %s", d.policy.Selected, d.mode.Selected, auth)
+	d.securityLabel.SetText("当前：" + d.securitySummary)
 }
 
+// showSecurity opens the connection settings; false is kept for callers that
+// only open them when needed.
 func (d *Desktop) showSecurity(open bool) {
 	if open {
-		d.securityBox.Show()
-		d.securityBtn.SetIcon(theme.MenuDropDownIcon())
-	} else {
-		d.securityBox.Hide()
-		d.securityBtn.SetIcon(theme.MenuExpandIcon())
+		d.settings.Show()
 	}
 }
 
-// showConnectionMenu holds the rarely used connection actions.
-func (d *Desktop) showConnectionMenu() {
-	remove := fyne.NewMenuItem("删除当前连接配置", d.deleteProfile)
-	remove.Disabled = d.profile.Selected == ""
-	probe := fyne.NewMenuItem("连接数测试…", d.probeSessionsDialog)
-	probe.Disabled = d.busy != 0
-	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(d.moreBtn).Add(fyne.NewPos(0, d.moreBtn.Size().Height))
-	widget.ShowPopUpMenuAtPosition(fyne.NewMenu("", remove, probe), d.win.Canvas(), pos)
+// endpoint composes the Endpoint from the address and port fields; an address
+// typed as a full Endpoint keeps its own port and path.
+func (d *Desktop) endpoint() string {
+	host := strings.TrimSpace(d.host.Text)
+	if host == "" || strings.Contains(host, "://") {
+		return host
+	}
+	port := strings.TrimSpace(d.port.Text)
+	if port == "" {
+		port = "4840"
+	}
+	return "opc.tcp://" + net.JoinHostPort(host, port) + d.endpointPath
+}
+
+// setEndpoint splits an Endpoint, host:port or host into the fields.
+func (d *Desktop) setEndpoint(s string) {
+	d.endpointSync = true
+	defer func() { d.endpointSync = false }()
+	s = strings.TrimSpace(s)
+	if s == "" {
+		d.host.SetText("")
+		d.endpointPath = ""
+		return
+	}
+	full := normalizeEndpoint(s)
+	u, err := url.Parse(full)
+	if err != nil || u.Hostname() == "" {
+		d.host.SetText(s)
+		return
+	}
+	d.host.SetText(u.Hostname())
+	d.port.SetText(u.Port())
+	d.endpointPath = strings.TrimSuffix(u.EscapedPath(), "/")
+}
+
+// hostChanged splits a pasted Endpoint or a chosen recent one; typing a new
+// address drops the path of the previous one.
+func (d *Desktop) hostChanged(text string) {
+	if d.endpointSync {
+		return
+	}
+	t := strings.TrimSpace(text)
+	if strings.Contains(t, "://") || strings.Count(t, ":") == 1 {
+		d.setEndpoint(t)
+		return
+	}
+	d.endpointPath = ""
 }
 
 func (d *Desktop) pointsPanel() fyne.CanvasObject {
@@ -222,6 +274,7 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	d.referenceBtn = widget.NewButtonWithIcon("设为基准点位", theme.ConfirmIcon(), d.setReference)
 	d.allRoot = widget.NewEntry()
 	d.allRoot.SetText("i=85")
+	d.allRoot.SetPlaceHolder("i=85 读取全部对象；ns=2 读取命名空间 2")
 	d.fullBtn = widget.NewButtonWithIcon("全量读取", theme.DownloadIcon(), func() { d.startFullRead(d.allRoot.Text) })
 	d.fullBtn.Importance = widget.HighImportance
 	d.stopReadBtn = widget.NewButtonWithIcon("停止读取", theme.MediaStopIcon(), func() {
@@ -244,15 +297,28 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	d.resultFilter = widget.NewSelect(filters, refreshRows)
 	d.resultFilter.SetSelected("全部")
 	d.search = widget.NewEntry()
-	d.search.SetPlaceHolder("搜索 NodeID、名称或路径；模糊可输入多个关键字，空格分隔")
+	d.search.SetPlaceHolder("搜索 NodeID、名称或路径，空格分隔多个关键字")
 	d.search.OnChanged = refreshRows
-	d.searchMode = widget.NewRadioGroup(searchModes, refreshRows)
-	d.searchMode.Horizontal = true
-	d.searchMode.Required = true
+	d.searchMode = widget.NewSelect(searchModes, refreshRows)
 	d.searchMode.SetSelected("模糊")
 	clearSearch := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() { d.search.SetText("") })
-	d.exportBtn = widget.NewButtonWithIcon("导出 CSV", theme.DocumentSaveIcon(), d.exportPointsDialog)
+	d.exportCSVBtn = widget.NewButtonWithIcon("导出 CSV", theme.DocumentSaveIcon(), d.exportPointsDialog)
 	d.exportAttrBtn = widget.NewButtonWithIcon("导出属性表", theme.DocumentSaveIcon(), d.exportAttributesDialog)
+	// One button holds the exports, which share the results' filter and search.
+	d.exportBtn = widget.NewButtonWithIcon("导出", theme.DocumentSaveIcon(), nil)
+	d.exportBtn.OnTapped = func() {
+		menu := fyne.NewMenu("",
+			fyne.NewMenuItem("导出 CSV…", d.exportPointsDialog),
+			fyne.NewMenuItem("导出 viSCADA 属性表…", d.exportAttributesDialog),
+			fyne.NewMenuItem("复制结果", d.copyPointRows))
+		pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(d.exportBtn).Add(fyne.NewPos(0, d.exportBtn.Size().Height))
+		widget.ShowPopUpMenuAtPosition(menu, d.win.Canvas(), pos)
+	}
+	d.writeSelectedBtn = widget.NewButtonWithIcon("写入", theme.DocumentCreateIcon(), func() {
+		if r, ok := d.selectedResult(); ok {
+			d.writeDialog(r)
+		}
+	})
 	d.importBtn = widget.NewButtonWithIcon("导入属性表验证", theme.FolderOpenIcon(), d.importAttributesDialog)
 	d.jobLabel = widget.NewLabel("")
 	d.jobBar = widget.NewProgressBar()
@@ -270,31 +336,34 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 		}
 	}
 	d.tree = d.newPointTree()
-	d.tree.Hide()
-	expand := widget.NewButtonWithIcon("展开全部", theme.MenuExpandIcon(), func() { d.tree.OpenAllBranches() })
-	collapse := widget.NewButtonWithIcon("折叠", theme.MenuDropUpIcon(), func() { d.tree.CloseAllBranches() })
+	d.cards = d.newCardView()
+	d.trends = d.newTrendView()
+	expand := widget.NewButtonWithIcon("", theme.MenuExpandIcon(), func() { d.tree.OpenAllBranches() })
+	collapse := widget.NewButtonWithIcon("", theme.MenuDropUpIcon(), func() { d.tree.CloseAllBranches() })
 	treeTools := container.NewHBox(expand, collapse)
-	treeTools.Hide()
-	d.viewMode = widget.NewRadioGroup([]string{"表格", "树状"}, func(mode string) {
+	views := map[string]fyne.CanvasObject{"表格": d.table, "树状": d.tree, "卡片": d.cards, "趋势": d.trends}
+	d.viewMode = widget.NewSelect(viewModes, func(mode string) {
 		if d.tree == nil {
 			return
 		}
+		for name, v := range views {
+			if name == mode {
+				v.Show()
+			} else {
+				v.Hide()
+			}
+		}
 		if mode == "树状" {
-			d.table.Hide()
-			d.tree.Show()
 			treeTools.Show()
 			d.treeIndex = pointTree{}
 			d.refreshTree()
 		} else {
-			d.tree.Hide()
 			treeTools.Hide()
-			d.table.Show()
 		}
+		d.refreshViews()
+		d.updateMenu()
 	})
-	d.viewMode.Horizontal = true
-	d.viewMode.Required = true
 	d.viewMode.SetSelected("表格")
-	copy := widget.NewButtonWithIcon("复制", theme.ContentCopyIcon(), d.copyPointRows)
 	d.refreshInterval = widget.NewSelect([]string{"1s", "2s", "5s", "10s", "30s"}, func(string) {
 		if d.autoRefresh != nil && d.autoRefresh.Checked {
 			d.startRefresh()
@@ -311,17 +380,7 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 			d.refresh(d.controller.Snapshot())
 		}
 	})
-	fold := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), nil)
-	fold.OnTapped = func() {
-		if d.split.Offset > 0.02 {
-			d.splitOffset = d.split.Offset
-			d.split.SetOffset(0)
-			fold.SetIcon(theme.NavigateNextIcon())
-		} else {
-			d.split.SetOffset(d.splitOffset)
-			fold.SetIcon(theme.NavigateBackIcon())
-		}
-	}
+	d.foldBtn = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), d.toggleSidebar)
 	bold := func(text string) *widget.Label {
 		return widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	}
@@ -335,9 +394,9 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 		form(widget.NewFormItem("类型", d.kind), widget.NewFormItem("数量", d.count), widget.NewFormItem("轮询间隔", d.interval)),
 		container.NewGridWithColumns(3, d.readBtn, d.pollBtn, d.stopPollBtn))
 	full := container.NewVBox(form(widget.NewFormItem("父节点", d.allRoot)), container.NewGridWithColumns(2, d.fullBtn, d.stopReadBtn))
-	attributes := container.NewVBox(d.importBtn, widget.NewLabelWithStyle("导出在右侧结果栏，按当前筛选和搜索导出。", fyne.TextAlignLeading, fyne.TextStyle{Italic: true}))
-	// Sections fold, so the column fits a laptop screen; the ones used on
-	// every visit start open.
+	attributes := container.NewVBox(d.importBtn, widget.NewLabelWithStyle("导出在结果栏“导出”中，按当前筛选和搜索导出。", fyne.TextAlignLeading, fyne.TextStyle{Italic: true}))
+	// Sections fold, so the column fits a laptop screen; only the single
+	// point section starts open.
 	d.sidebar = widget.NewAccordion(
 		widget.NewAccordionItem("单点验证与写入", single),
 		widget.NewAccordionItem("节点清单与轮询", list),
@@ -346,16 +405,18 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	)
 	d.sidebar.MultiOpen = true
 	d.sidebar.Open(0)
-	d.sidebar.Open(2)
-	// Two short rows fit a window about 1000 pixels wide; the fold button
-	// gives the data the whole width.
-	searchRow := container.NewBorder(nil, nil, container.NewHBox(fold, bold("搜索")), container.NewHBox(clearSearch, d.searchMode, d.autoRefresh, d.refreshInterval), d.search)
-	toolbar := container.NewBorder(nil, nil, container.NewHBox(bold("筛选"), d.resultFilter, bold("视图"), d.viewMode, treeTools), container.NewHBox(d.exportBtn, d.exportAttrBtn, copy))
-	results := container.NewBorder(container.NewVBox(searchRow, toolbar, d.pointSummary, d.scanStatus, d.jobBox, d.emptyHint), nil, nil, nil, container.NewStack(d.table, d.tree))
+	// One toolbar row: the search fills what the controls leave, and the
+	// summary line also carries the read status.
+	fixed := func(w float32, o fyne.CanvasObject) fyne.CanvasObject {
+		return container.NewGridWrap(fyne.NewSize(w, o.MinSize().Height), o)
+	}
+	controls := container.NewHBox(clearSearch, fixed(76, d.searchMode), fixed(124, d.resultFilter), fixed(80, d.viewMode), treeTools, d.autoRefresh, fixed(64, d.refreshInterval), d.writeSelectedBtn, d.exportBtn)
+	toolbar := container.NewBorder(nil, nil, d.foldBtn, controls, d.search)
+	results := container.NewBorder(container.NewVBox(toolbar, d.pointSummary, d.jobBox, d.emptyHint), nil, nil, nil, container.NewStack(d.table, d.tree, d.cards, d.trends))
 	// In a box the sections keep their own height instead of sharing the
 	// column's, which left gaps under the open ones.
 	d.split = container.NewHSplit(container.NewVScroll(container.NewVBox(d.sidebar)), results)
-	d.splitOffset = .28
+	d.splitOffset = .26
 	d.split.SetOffset(d.splitOffset)
 	return d.split
 }
@@ -382,6 +443,7 @@ func (d *Desktop) updateWriteInput() {
 func (d *Desktop) browsePanel() fyne.CanvasObject {
 	d.browseRoot = widget.NewEntry()
 	d.browseRoot.SetText("i=85")
+	d.browseRoot.SetPlaceHolder("i=85 为 Objects；ns=2 为命名空间 2 的节点")
 	browse := func() {
 		node := d.browseRoot.Text
 		d.run(func(ctx context.Context) error { return d.controller.Browse(ctx, node) }, nil)
@@ -445,12 +507,11 @@ func (d *Desktop) browsePanel() fyne.CanvasObject {
 	}
 	d.browseBtn.SetIcon(theme.NavigateNextIcon())
 	d.readSelectedBtn.Importance = widget.HighImportance
-	hint := widget.NewLabel("点击“选择”列勾选节点，可多选或全选后一起读取：对象读取其下全部变量，变量读取自身。点击其他列：对象继续浏览，变量追加到清单。Objects 根节点为 i=85。搜索节点在父节点下逐级查找，结果可勾选读取。")
-	hint.Wrapping = fyne.TextWrapWord
-	hint.Importance = widget.LowImportance
-	selection := container.NewBorder(nil, nil, container.NewHBox(d.selectAllBtn, d.clearSelectBtn, d.readSelectedBtn), nil, d.selectionLabel)
+	// The selection and the browse status share one row; how to use the list
+	// is in the manual.
+	selection := container.NewBorder(nil, nil, container.NewHBox(d.selectAllBtn, d.clearSelectBtn, d.readSelectedBtn, d.selectionLabel), nil, d.browseStatus)
 	search := container.NewBorder(nil, nil, widget.NewLabelWithStyle("搜索", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.nodeSearchMode, d.nodeSearchBtn, d.stopSearchBtn), d.nodeSearch)
-	top := widget.NewCard("", "", container.NewVBox(container.NewBorder(nil, nil, widget.NewLabelWithStyle("父节点", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.browseBtn, d.browseFullBtn), d.browseRoot), search, hint, selection, d.browseStatus))
+	top := container.NewVBox(container.NewBorder(nil, nil, widget.NewLabelWithStyle("父节点", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), container.NewHBox(d.browseBtn, d.browseFullBtn), d.browseRoot), search, selection)
 	return container.NewBorder(top, nil, nil, nil, d.browseTable)
 }
 

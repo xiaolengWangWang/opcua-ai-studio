@@ -115,6 +115,15 @@ func (c *Controller) ReadNodes(ctx context.Context, roots []device.Node) error {
 	if len(roots) == 0 {
 		return errors.New("请选择要读取的节点")
 	}
+	// A namespace alone, ns=2, reads that namespace's variables below Objects
+	// without browsing namespace 0's large Server object.
+	var keep func(device.Node) bool
+	if len(roots) == 1 {
+		if root, k, err := readScope(roots[0].NodeID); err == nil && k != nil {
+			label := strings.ReplaceAll(strings.TrimSpace(roots[0].NodeID), "＝", "=")
+			roots, keep = []device.Node{{NodeID: root, DisplayName: label}}, k
+		}
+	}
 	var nodes []device.Node
 	var points []Point
 	var level []string
@@ -141,6 +150,9 @@ func (c *Controller) ReadNodes(ctx context.Context, roots []device.Node) error {
 		}
 	}
 	scope := level[0]
+	if keep != nil {
+		scope = roots[0].DisplayName
+	}
 	if len(level) > 1 {
 		scope = fmt.Sprintf("%s 等 %d 个节点", level[0], len(level))
 	}
@@ -164,7 +176,7 @@ func (c *Controller) ReadNodes(ctx context.Context, roots []device.Node) error {
 	}
 	t.update(nil, "浏览中 · 正在查找全部变量")
 	var reported time.Time
-	err = walk(ctx, s.d, level, seen, func(parent string, n device.Node) error {
+	err = walk(ctx, s.d, level, seen, keep, func(parent string, n device.Node) error {
 		path := paths[parent]
 		paths[n.NodeID] = append(path[:len(path):len(path)], nodeName(n))
 		if !strings.HasSuffix(n.Class, "Variable") {

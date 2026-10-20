@@ -63,6 +63,7 @@ func (d *Desktop) verifySingle() {
 // selectResult takes a table row or tree point into the single point card,
 // with its declared type, so an imported or BAD control point can be written.
 func (d *Desktop) selectResult(r device.ReadResult) {
+	d.selectedNode = r.Address.NodeID
 	d.singleNode.SetText(r.Address.NodeID)
 	kind := string(r.Kind())
 	if kind == "" {

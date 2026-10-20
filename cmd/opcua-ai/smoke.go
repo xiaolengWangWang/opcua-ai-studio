@@ -26,9 +26,8 @@ import (
 // unchanged, full-width punctuation and symbols included.
 const chineseText = "一号换热站 正常运行，供水温度95℃"
 
-// view sets the result search, switches between the table and the tree and
-// selects a tab.
-func runSmoke(ctx context.Context, c *service.Controller, capture func() image.Image, export func(io.Writer, string) error, view func(search string, tree bool, tab int), dir string) error {
+// view sets the result search, the view and the tab.
+func runSmoke(ctx context.Context, c *service.Controller, capture func() image.Image, export func(io.Writer, string) error, view func(search, view string, tab int), dir string) error {
 	defer c.Close()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -184,10 +183,10 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 	}
 	// The search narrows the table, the tree and the export alike.
 	for _, shot := range []struct {
-		name string
-		tab  int
-	}{{"native-gui-tree.png", 0}, {"native-gui-packets.png", 2}} {
-		view("热力站", true, shot.tab)
+		name, search, view string
+		tab                int
+	}{{"native-gui-cards.png", "", "卡片", 0}, {"native-gui-tree.png", "热力站", "树状", 0}, {"native-gui-packets.png", "热力站", "树状", 2}} {
+		view(shot.search, shot.view, shot.tab)
 		if im = capture(); im == nil {
 			return fmt.Errorf("没有截图 %s", shot.name)
 		}

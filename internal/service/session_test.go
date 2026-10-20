@@ -266,3 +266,37 @@ func TestAutoRefreshKeepsNamesPathsAndAccess(t *testing.T) {
 		t.Fatal("refresh started without points")
 	}
 }
+
+func TestNamespaceAloneReadsItsNodesBelowObjects(t *testing.T) {
+	d := &pointDriver{tree: map[string][]device.Node{
+		"i=85":              {{NodeID: "i=2253", DisplayName: "Server", Class: "Object"}, {NodeID: "ns=2;s=Plant", DisplayName: "Plant", Class: "Object"}, {NodeID: "ns=3;s=Other", Class: "Variable"}},
+		"i=2253":            {{NodeID: "i=2256", Class: "Variable"}},
+		"ns=2;s=Plant":      {{NodeID: "ns=2;s=Plant.Temp", DisplayName: "Temp", Class: "Variable"}, {NodeID: "ns=2;s=Plant.Pump", DisplayName: "Pump", Class: "Object"}},
+		"ns=2;s=Plant.Pump": {{NodeID: "ns=2;i=7", DisplayName: "Run", Class: "Variable"}},
+	}}
+	c := pointController(t, d)
+	ctx := context.Background()
+	if err := c.ReadAll(ctx, " ns＝2 "); err != nil {
+		t.Fatal(err)
+	}
+	s := c.Snapshot()
+	var got []string
+	for _, r := range s.Results {
+		got = append(got, r.Address.NodeID+"@"+strings.Join(r.Path, "/"))
+		if r.Scope != "ns=2" {
+			t.Fatalf("scope %q", r.Scope)
+		}
+	}
+	if strings.Join(got, ",") != "ns=2;s=Plant.Temp@ns=2/Plant,ns=2;i=7@ns=2/Plant/Pump" {
+		t.Fatalf("namespace read: %v", got)
+	}
+	if err := c.Browse(ctx, "ns=2"); err != nil {
+		t.Fatal(err)
+	}
+	if n := c.Snapshot().Nodes; len(n) != 1 || n[0].NodeID != "ns=2;s=Plant" {
+		t.Fatalf("namespace browse: %+v", n)
+	}
+	if err := c.SearchNodes(ctx, "ns=2", func(n device.Node) bool { return true }); err != nil || len(c.Snapshot().Nodes) != 4 {
+		t.Fatalf("namespace search: %+v %v", c.Snapshot().Nodes, err)
+	}
+}

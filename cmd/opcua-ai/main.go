@@ -57,7 +57,7 @@ func main() {
 				var exportErr error
 				fyne.DoAndWait(func() { exportErr = d.ExportPointsCSV(out, filter) })
 				return exportErr
-			}, func(search string, tree bool, tab int) { fyne.DoAndWait(func() { d.ShowSearch(search, tree, tab) }) }, *smokeDir)
+			}, func(search, view string, tab int) { fyne.DoAndWait(func() { d.ShowSearch(search, view, tab) }) }, *smokeDir)
 			result <- err
 			fyne.Do(a.Quit)
 		}()

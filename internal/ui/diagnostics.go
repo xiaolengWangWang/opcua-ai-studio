@@ -58,16 +58,13 @@ func (d *Desktop) diagnosticsPanel() fyne.CanvasObject {
 	bold := func(text string) *widget.Label {
 		return widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	}
-	hint := widget.NewLabel("服务级请求与响应记录（READ / WRITE / BROWSE），最近 256 条；完整记录保存在 SQLite，按天和 50 MB 轮转。")
-	hint.Importance = widget.LowImportance
-	hint.Wrapping = fyne.TextWrapWord
 	toolbar := container.NewBorder(nil, nil, container.NewHBox(bold("筛选"), d.packetFilter, bold("搜索")), container.NewHBox(clear, copyJSON, export), d.packetSearch)
 	detail := container.NewBorder(bold("请求详情"), nil, nil, nil, container.NewVScroll(d.packetDetail))
 	logs := container.NewBorder(container.NewBorder(nil, nil, bold("运行日志"), copyLogs), nil, nil, nil, container.NewVScroll(d.logs))
 	bottom := container.NewHSplit(detail, logs)
 	split := container.NewVSplit(d.packetTable, bottom)
 	split.SetOffset(.6)
-	return container.NewBorder(container.NewVBox(hint, toolbar, d.packetStats), nil, nil, nil, split)
+	return container.NewBorder(container.NewVBox(toolbar, d.packetStats), nil, nil, nil, split)
 }
 
 // refreshPackets rebuilds the filtered list when the packets or the filter

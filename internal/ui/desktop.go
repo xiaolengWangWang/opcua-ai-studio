@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
@@ -78,16 +77,38 @@ type Desktop struct {
 	refCheckBtn, refClearBtn *widget.Button
 	// Result search and tree.
 	search               *widget.Entry
-	searchMode, viewMode *widget.RadioGroup
+	searchMode, viewMode *widget.Select
 	tree                 *widget.Tree
 	treeIndex            pointTree
 	// Connection profiles, server search and node search.
 	profile                                                                                *widget.Select
 	autoReconnect                                                                          *widget.Check
-	target                                                                                 *widget.SelectEntry // with the recent endpoints
-	securityBox                                                                            *fyne.Container
 	scanBtn, serverInfoBtn, saveProfileBtn, deleteProfileBtn, nodeSearchBtn, stopSearchBtn *widget.Button
-	securityBtn, moreBtn                                                                   *widget.Button
+	securityBtn                                                                            *widget.Button
+	// The address and port make the Endpoint; a full Endpoint's path is kept.
+	host            *widget.SelectEntry // with the recent endpoints
+	port            *widget.Entry
+	endpointPath    string
+	endpointSync    bool // the fields are being set from an Endpoint
+	settings        dialog.Dialog
+	securitySummary string
+	securityLabel   *widget.Label
+	autoFullRead    *widget.Check
+	// Menu bar: items that mirror buttons, the toggles, and the last state shown.
+	mainMenu                                                          *fyne.MainMenu
+	menuButtons                                                       map[*fyne.MenuItem]*widget.Button
+	menuAutoReconnect, menuAutoFullRead, menuAutoRefresh, menuSidebar *fyne.MenuItem
+	menuViews                                                         []*fyne.MenuItem
+	menuState                                                         string
+	// Views besides the table and tree, and the values history behind trends.
+	cards, trends             *widget.GridWrap
+	trendRows                 []int
+	history                   map[string][]float64
+	historyFirst              *device.ReadResult
+	foldBtn, writeSelectedBtn *widget.Button
+	exportCSVBtn              *widget.Button
+	summaryBase               []widget.RichTextSegment // the counts, before the read status
+	selectedNode              string                   // the result last chosen in a view, for writing
 	// Points tab layout.
 	sidebar     *widget.Accordion
 	emptyHint   *widget.Label
@@ -132,31 +153,21 @@ func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 	d.recordStatus = widget.NewLabel("")
 	d.recordStatus.Truncation = fyne.TextTruncateEllipsis
 	d.recordStatus.Importance = widget.LowImportance
-	logo := canvas.NewImageFromResource(icon.Application())
-	logo.FillMode = canvas.ImageFillContain
-	logo.SetMinSize(fyne.NewSquareSize(28))
-	title := widget.NewRichText(&widget.TextSegment{Text: "OPC UA AI Studio", Style: widget.RichTextStyle{Inline: true, SizeName: theme.SizeNameSubHeadingText, TextStyle: fyne.TextStyle{Bold: true}}},
-		&widget.TextSegment{Text: "  v" + version, Style: widget.RichTextStyle{Inline: true, ColorName: theme.ColorNamePlaceHolder}})
 	d.refLabel = widget.NewLabel("")
 	d.refCheckBtn = widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() { d.run(d.controller.CheckReference, nil) })
 	d.refClearBtn = widget.NewButtonWithIcon("", theme.ContentClearIcon(), d.clearReference)
 	d.refBox = container.NewHBox(d.refLabel, d.refCheckBtn, d.refClearBtn)
 	d.refBox.Hide()
-	header := container.NewBorder(nil, nil, container.NewHBox(logo, title), container.NewHBox(d.refBox, d.activity, d.status))
-	d.tabs = container.NewAppTabs(container.NewTabItemWithIcon("点位与读写", theme.ListIcon(), d.pointsPanel()), container.NewTabItemWithIcon("节点浏览", theme.SearchIcon(), d.browsePanel()), container.NewTabItemWithIcon("通讯与日志", theme.DocumentIcon(), d.diagnosticsPanel()), container.NewTabItemWithIcon("AI 诊断", theme.InfoIcon(), d.aiPanel()))
-	open := widget.NewButtonWithIcon("打开记录目录", theme.FolderOpenIcon(), func() {
-		if err := platform.OpenFile(c.Snapshot().RecordDir); err != nil {
-			d.showError(err)
-		}
-	})
-	help := widget.NewButtonWithIcon("操作手册", theme.HelpIcon(), d.showPointHelp)
 	d.checkUpdateBtn = widget.NewButtonWithIcon("检查更新", theme.ViewRefreshIcon(), func() { d.checkUpdates(false) })
 	d.updateBtn = widget.NewButtonWithIcon("", theme.DownloadIcon(), nil)
 	d.updateBtn.Importance = widget.HighImportance
 	d.updateBtn.Hide()
-	footer := container.NewBorder(widget.NewSeparator(), nil, nil, container.NewHBox(d.updateBtn, d.checkUpdateBtn, help, open), d.recordStatus)
-	connection := widget.NewCard("", "", d.connectionPanel())
-	d.win.SetContent(container.NewPadded(container.NewBorder(container.NewVBox(header, connection, d.lastError), footer, nil, nil, d.tabs)))
+	connection := d.connectionPanel()
+	d.tabs = container.NewAppTabs(container.NewTabItemWithIcon("点位与读写", theme.ListIcon(), d.pointsPanel()), container.NewTabItemWithIcon("节点浏览", theme.SearchIcon(), d.browsePanel()), container.NewTabItemWithIcon("通讯与日志", theme.DocumentIcon(), d.diagnosticsPanel()), container.NewTabItemWithIcon("AI 诊断", theme.InfoIcon(), d.aiPanel()))
+	// The window title names the program; the rare actions are in the menu
+	// bar, so only the connection bar sits above the data.
+	d.buildMenu()
+	d.win.SetContent(container.NewPadded(container.NewBorder(container.NewVBox(connection, d.lastError), nil, nil, nil, d.tabs)))
 	// The last window size, else 1280 × 860; either within the work area, so
 	// the window fits a 1366 × 768 laptop.
 	w, h := platform.WorkArea()
@@ -309,6 +320,9 @@ func (d *Desktop) controls() {
 	set(d.browseFullBtn, idle && connected)
 	set(d.stopReadBtn, d.checkCancel != nil)
 	set(d.exportBtn, idle && len(d.snapshot.Results) > 0)
+	set(d.exportCSVBtn, idle && len(d.snapshot.Results) > 0)
+	r, chosen := d.selectedResult()
+	set(d.writeSelectedBtn, idle && connected && chosen && (r.Writable() || r.Access == ""))
 	set(d.exportAttrBtn, idle && len(d.snapshot.Results) > 0)
 	set(d.importBtn, idle && connected)
 	set(d.selectAllBtn, len(d.snapshot.Nodes) > 0)
@@ -336,6 +350,7 @@ func (d *Desktop) controls() {
 		d.activity.Show()
 		d.activity.Start()
 	}
+	d.updateMenu()
 }
 func (d *Desktop) refresh(s service.Snapshot) {
 	if d.revision == s.Revision {
@@ -345,7 +360,7 @@ func (d *Desktop) refresh(s service.Snapshot) {
 	previous := d.snapshot
 	d.snapshot = s
 	if s.State == "connected" && (previous.State != "connected" || previous.Generation != s.Generation) {
-		d.target.SetText(s.Target)
+		d.setEndpoint(s.Target)
 	}
 	if previous.Generation != s.Generation {
 		d.allowWrite.SetChecked(false)
@@ -371,16 +386,13 @@ func (d *Desktop) refresh(s service.Snapshot) {
 		// An automatic reconnect or a later operation cleared the error.
 		d.lastError.Hide()
 	}
-	d.recordStatus.SetText("记录: " + s.RecordDir)
-	if s.RecordError != "" {
-		d.recordStatus.SetText("记录错误: " + s.RecordError)
-		d.recordStatus.Importance = widget.DangerImportance
-	} else {
-		d.recordStatus.Importance = widget.MediumImportance
+	// The record path is in 帮助 › 关于; a recording problem shows as an error.
+	if s.RecordError != "" && s.RecordError != previous.RecordError {
+		d.showError(errors.New("记录错误：" + s.RecordError))
 	}
 	d.refreshPointRows()
 	d.refreshReference()
-	d.scanStatus.SetText(s.ScanStatus)
+	d.updateSummary()
 	d.browseStatus.SetText(s.BrowseStatus)
 	// Nodes are copy-on-write: refresh the browse table only for a new list.
 	var first *device.Node
@@ -402,9 +414,9 @@ func (d *Desktop) refresh(s service.Snapshot) {
 }
 func (d *Desktop) config() (service.Config, error) {
 	cfg := service.DefaultConfig()
-	cfg.Target = normalizeEndpoint(d.target.Text)
-	if cfg.Target != d.target.Text {
-		d.target.SetText(cfg.Target)
+	cfg.Target = normalizeEndpoint(d.endpoint())
+	if cfg.Target != "" {
+		d.setEndpoint(cfg.Target)
 	}
 	cfg.AutoReconnect = d.autoReconnect.Checked
 	cfg.Policy = d.policy.Selected
@@ -448,7 +460,7 @@ func (d *Desktop) points() ([]service.Point, error) {
 }
 func (d *Desktop) saveInputs() {
 	p := d.app.Preferences()
-	p.SetString("endpoint", d.target.Text)
+	p.SetString("endpoint", d.endpoint())
 	p.SetString("policy", d.policy.Selected)
 	p.SetString("mode", d.mode.Selected)
 	p.SetString("timeout", d.timeout.Text)
@@ -459,11 +471,12 @@ func (d *Desktop) saveInputs() {
 	p.SetString("key", d.key.Text)
 	p.SetString("server-cert", d.serverCert.Text)
 	p.SetBool("auto-reconnect", d.autoReconnect.Checked)
+	p.SetBool("auto-full-read", d.autoFullRead.Checked)
 }
 func (d *Desktop) loadInputs() {
 	p := d.app.Preferences()
-	d.target.SetText(p.String("endpoint"))
-	d.target.SetOptions(d.endpointHistory())
+	d.setEndpoint(p.String("endpoint"))
+	d.host.SetOptions(historyOptions(d.endpointHistory()))
 	d.policy.SetSelected(p.StringWithFallback("policy", "None"))
 	d.mode.SetSelected(p.StringWithFallback("mode", "None"))
 	d.timeout.SetText(p.StringWithFallback("timeout", "5s"))
@@ -474,6 +487,7 @@ func (d *Desktop) loadInputs() {
 	d.key.SetText(p.String("key"))
 	d.serverCert.SetText(p.String("server-cert"))
 	d.autoReconnect.SetChecked(p.BoolWithFallback("auto-reconnect", true))
+	d.autoFullRead.SetChecked(p.Bool("auto-full-read"))
 	d.storeProfiles(d.profiles(), "")
 }
 func (d *Desktop) confirmWrite() {

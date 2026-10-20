@@ -143,18 +143,18 @@ func TestSinglePointTakesViscadaIdentifier(t *testing.T) {
 
 func TestProfilesNeverSavePasswords(t *testing.T) {
 	d := searchDesktop(t)
-	d.target.SetText("opc.tcp://192.168.1.10:4840")
+	d.setEndpoint("opc.tcp://192.168.1.10:4840")
 	d.username.SetText("operator")
 	d.password.SetText("test-password")
 	d.policy.SetSelected("None")
 	d.autoReconnect.SetChecked(false)
-	d.storeProfiles([]profile{{Name: "一号站", Endpoint: d.target.Text, Policy: "None", Mode: "None", Timeout: "3s", Username: "operator"}, {Name: "二号站", Endpoint: "opc.tcp://192.168.1.20:49320", Policy: "None", Mode: "None", Username: "admin", AutoReconnect: true}}, "")
+	d.storeProfiles([]profile{{Name: "一号站", Endpoint: d.endpoint(), Policy: "None", Mode: "None", Timeout: "3s", Username: "operator"}, {Name: "二号站", Endpoint: "opc.tcp://192.168.1.20:49320", Policy: "None", Mode: "None", Username: "admin", AutoReconnect: true}}, "")
 	if strings.Contains(d.app.Preferences().String("profiles"), "test-password") {
 		t.Fatal("password saved in a profile")
 	}
 	d.profile.SetSelected("二号站")
-	if d.target.Text != "opc.tcp://192.168.1.20:49320" || d.username.Text != "admin" || d.password.Text != "" || !d.autoReconnect.Checked {
-		t.Fatalf("profile not applied or password kept for another account: %q %q", d.target.Text, d.password.Text)
+	if d.endpoint() != "opc.tcp://192.168.1.20:49320" || d.username.Text != "admin" || d.password.Text != "" || !d.autoReconnect.Checked {
+		t.Fatalf("profile not applied or password kept for another account: %q %q", d.endpoint(), d.password.Text)
 	}
 	d.password.SetText("another")
 	d.profile.SetSelected("一号站")
