@@ -75,11 +75,6 @@ func (d *Desktop) selectResult(r device.ReadResult) {
 		n = max(1, len(r.Value.Elements))
 	}
 	d.singleCount.SetText(strconv.Itoa(n))
-	// A control point's current value is where a new set value starts.
-	if r.Writable() && r.Value.Type != "" && r.Value.Elements == nil {
-		d.writeValue.SetText(device.FormatValue(r.Value))
-	}
-	d.updateWriteInput()
 	d.showSingle(&r, "")
 }
 

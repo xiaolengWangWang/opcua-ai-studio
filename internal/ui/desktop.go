@@ -22,46 +22,45 @@ import (
 )
 
 type Desktop struct {
-	app                                                                                                              fyne.App
-	win                                                                                                              fyne.Window
-	controller                                                                                                       *service.Controller
-	ctx                                                                                                              context.Context
-	cancel                                                                                                           context.CancelFunc
-	mu                                                                                                               sync.Mutex
-	workers                                                                                                          sync.WaitGroup
-	once, showOnce                                                                                                   sync.Once
-	stopped                                                                                                          bool
-	closeErr                                                                                                         error
-	busy                                                                                                             int
-	revision                                                                                                         uint64
-	snapshot                                                                                                         service.Snapshot
-	timeout, username, password, cert, key, serverCert, addresses, count, interval, writeValue, browseRoot           *widget.Entry
-	policy, mode, kind                                                                                               *widget.Select
-	allowWrite                                                                                                       *widget.Check
-	status, lastError, recordStatus, writeStatus, logs                                                               *widget.Label
-	activity                                                                                                         *widget.Activity
-	connectBtn, disconnectBtn, demoBtn, stopDemoBtn, readBtn, pollBtn, stopPollBtn, writeBtn, browseBtn, discoverBtn *widget.Button
-	table, browseTable                                                                                               *widget.Table
-	resultFilter                                                                                                     *widget.Select
-	allRoot                                                                                                          *widget.Entry
-	verifyBtn, fullBtn, browseFullBtn, stopReadBtn, exportBtn                                                        *widget.Button
-	scanStatus                                                                                                       *widget.Label
-	pointSummary                                                                                                     *widget.RichText
-	visible                                                                                                          []int
-	pointsKey                                                                                                        pointsKey
-	nodesKey                                                                                                         *device.Node
-	nodesLen                                                                                                         int
-	browseSelection                                                                                                  []device.Node
-	browseSelected                                                                                                   map[string]bool
-	selectionLabel, jobLabel                                                                                         *widget.Label
-	selectAllBtn, clearSelectBtn, readSelectedBtn, importBtn, exportAttrBtn, probeBtn                                *widget.Button
-	jobBox                                                                                                           *fyne.Container
-	jobBar                                                                                                           *widget.ProgressBar
-	jobFollow                                                                                                        bool
-	checkCancel                                                                                                      context.CancelFunc
-	tabs                                                                                                             *container.AppTabs
-	version                                                                                                          string
-	updateBtn, checkUpdateBtn                                                                                        *widget.Button
+	app                                                                                                                                fyne.App
+	win                                                                                                                                fyne.Window
+	controller                                                                                                                         *service.Controller
+	ctx                                                                                                                                context.Context
+	cancel                                                                                                                             context.CancelFunc
+	mu                                                                                                                                 sync.Mutex
+	workers                                                                                                                            sync.WaitGroup
+	once, showOnce                                                                                                                     sync.Once
+	stopped                                                                                                                            bool
+	closeErr                                                                                                                           error
+	busy                                                                                                                               int
+	revision                                                                                                                           uint64
+	snapshot                                                                                                                           service.Snapshot
+	timeout, username, password, cert, key, serverCert, addresses, count, interval                                                     *widget.Entry
+	allRoot, browseRoot                                                                                                                *widget.SelectEntry // the parents, with the namespaces and the ones used last
+	policy, mode, kind                                                                                                                 *widget.Select
+	status, lastError, recordStatus, logs                                                                                              *widget.Label
+	activity                                                                                                                           *widget.Activity
+	connectBtn, disconnectBtn, demoBtn, stopDemoBtn, readBtn, pollBtn, stopPollBtn, browseBtn, discoverBtn, singleWriteBtn, historyBtn *widget.Button
+	table, browseTable                                                                                                                 *widget.Table
+	resultFilter                                                                                                                       *widget.Select
+	verifyBtn, fullBtn, browseFullBtn, stopReadBtn, exportBtn                                                                          *widget.Button
+	scanStatus                                                                                                                         *widget.Label
+	pointSummary                                                                                                                       *widget.RichText
+	visible                                                                                                                            []int
+	pointsKey                                                                                                                          pointsKey
+	nodesKey                                                                                                                           *device.Node
+	nodesLen                                                                                                                           int
+	browseSelection                                                                                                                    []device.Node
+	browseSelected                                                                                                                     map[string]bool
+	selectionLabel, jobLabel                                                                                                           *widget.Label
+	selectAllBtn, clearSelectBtn, readSelectedBtn, importBtn, exportAttrBtn, probeBtn                                                  *widget.Button
+	jobBox                                                                                                                             *fyne.Container
+	jobBar                                                                                                                             *widget.ProgressBar
+	jobFollow                                                                                                                          bool
+	checkCancel                                                                                                                        context.CancelFunc
+	tabs                                                                                                                               *container.AppTabs
+	version                                                                                                                            string
+	updateBtn, checkUpdateBtn                                                                                                          *widget.Button
 	// Single point card.
 	singleNode                 *widget.SelectEntry
 	singleKind                 *widget.Select
@@ -103,17 +102,24 @@ type Desktop struct {
 	// Views besides the table and tree, and the values history behind trends.
 	cards, trends             *widget.GridWrap
 	trendRows                 []int
-	history                   map[string][]float64
+	trend                     map[string][]service.Sample // per point, over the trend range
+	trendLoaded               map[string]bool             // read from the record database
+	trendWanted               map[string]bool             // to read, as their charts show
+	trendSampled              map[string]time.Time        // the read time of each point's last sample
+	trendGen                  int                         // changes when the trends are reset
+	trendLoading              bool
+	trendRange                *widget.Select
+	trendTarget               string // the Endpoint the trends belong to
+	rootOptionsKey            string // the parent options last offered
 	historyFirst              *device.ReadResult
 	foldBtn, writeSelectedBtn *widget.Button
 	exportCSVBtn              *widget.Button
 	summaryBase               []widget.RichTextSegment // the counts, before the read status
 	selectedNode              string                   // the result last chosen in a view, for writing
 	// Points tab layout.
-	sidebar     *widget.Accordion
-	emptyHint   *widget.Label
-	writeChoice *widget.RadioGroup // true / false for a Boolean point
-	treeSearch  string             // the search the tree was last opened for
+	sidebar    *widget.Accordion
+	emptyHint  *widget.Label
+	treeSearch string // the search the tree was last opened for
 	// Communication tab: the requests shown, newest first.
 	packetTable               *widget.Table
 	packetFilter              *widget.Select
@@ -154,9 +160,11 @@ func NewDesktop(a fyne.App, c *service.Controller, version string) *Desktop {
 	d.recordStatus.Truncation = fyne.TextTruncateEllipsis
 	d.recordStatus.Importance = widget.LowImportance
 	d.refLabel = widget.NewLabel("")
+	d.refLabel.Truncation = fyne.TextTruncateEllipsis
 	d.refCheckBtn = widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() { d.run(d.controller.CheckReference, nil) })
 	d.refClearBtn = widget.NewButtonWithIcon("", theme.ContentClearIcon(), d.clearReference)
-	d.refBox = container.NewHBox(d.refLabel, d.refCheckBtn, d.refClearBtn)
+	// A fixed width: the reference's value and time change with every read.
+	d.refBox = container.NewHBox(container.NewGridWrap(fyne.NewSize(260, d.refLabel.MinSize().Height), d.refLabel), d.refCheckBtn, d.refClearBtn)
 	d.refBox.Hide()
 	d.checkUpdateBtn = widget.NewButtonWithIcon("检查更新", theme.ViewRefreshIcon(), func() { d.checkUpdates(false) })
 	d.updateBtn = widget.NewButtonWithIcon("", theme.DownloadIcon(), nil)
@@ -330,7 +338,7 @@ func (d *Desktop) controls() {
 	set(d.readSelectedBtn, idle && connected && len(d.browseSelection) > 0)
 	set(d.pollBtn, idle && connected && !d.snapshot.Polling)
 	set(d.stopPollBtn, d.snapshot.Polling)
-	set(d.writeBtn, idle && connected && d.allowWrite.Checked)
+	set(d.singleWriteBtn, idle && connected)
 	set(d.browseBtn, idle && connected)
 	// The check follows the controller: a lost connection or a list poll stops it.
 	if d.autoRefresh.Checked != d.snapshot.AutoRefresh {
@@ -362,9 +370,13 @@ func (d *Desktop) refresh(s service.Snapshot) {
 	if s.State == "connected" && (previous.State != "connected" || previous.Generation != s.Generation) {
 		d.setEndpoint(s.Target)
 	}
-	if previous.Generation != s.Generation {
-		d.allowWrite.SetChecked(false)
+	// Trends belong to one server; another one starts them over.
+	if s.Target != "" && s.Target != d.trendTarget {
+		d.trendTarget = s.Target
+		d.trendSampled = nil
+		d.resetTrends()
 	}
+	d.refreshRootOptions()
 	state := map[string]string{"disconnected": "未连接", "connecting": "连接中…", "connected": "已连接", "reconnecting": "自动重连中…", "error": "连接失败", "closed": "已关闭"}[s.State]
 	if s.State == "connected" && s.Server != nil && s.Server.Product != "" {
 		state += " · " + strings.TrimSpace(s.Server.Product+" "+s.Server.Version)
@@ -410,11 +422,6 @@ func (d *Desktop) refresh(s service.Snapshot) {
 	if first != d.nodesKey || len(s.Nodes) != d.nodesLen {
 		d.nodesKey, d.nodesLen = first, len(s.Nodes)
 		d.browseTable.Refresh()
-	}
-	if s.WriteResult != nil {
-		d.writeStatus.SetText("写入: " + s.WriteResult.State + " · 读回" + s.Readback)
-	} else {
-		d.writeStatus.SetText("写入默认禁用；勾选允许写入后，每次操作仍须确认。")
 	}
 	d.logs.SetText(strings.Join(s.Logs, "\n"))
 	d.refreshPackets(false)
@@ -497,36 +504,4 @@ func (d *Desktop) loadInputs() {
 	d.autoReconnect.SetChecked(p.BoolWithFallback("auto-reconnect", true))
 	d.autoFullRead.SetChecked(p.Bool("auto-full-read"))
 	d.storeProfiles(d.profiles(), "")
-}
-func (d *Desktop) confirmWrite() {
-	if d.busy != 0 {
-		return
-	}
-	p, _, err := d.singlePoint()
-	if err != nil {
-		d.showError(err)
-		return
-	}
-	s := d.controller.Snapshot()
-	if !d.allowWrite.Checked || s.State != "connected" {
-		return
-	}
-	a, _ := device.ParseAddress(p.Address, p.Type, p.Count)
-	if _, err = device.ParseValue(a, d.writeValue.Text); err != nil {
-		d.showError(err)
-		return
-	}
-	req := service.WriteRequest{Point: p, Value: d.writeValue.Text, Generation: s.Generation}
-	// The current value shows what the write changes.
-	current := "未读取"
-	for i := range s.Results {
-		if r := &s.Results[i]; r.Address.NodeID == p.Address && r.Value.Type != "" {
-			current = device.FormatValue(r.Value)
-		}
-	}
-	dialog.ShowConfirm("确认 OPC UA 写入", fmt.Sprintf("Endpoint: %s\nNodeID: %s\n类型: %s，数量: %d\n当前值: %s\n写入值: %s", s.Target, req.Point.Address, req.Point.Type, req.Point.Count, current, req.Value), func(ok bool) {
-		if ok && d.allowWrite.Checked {
-			d.run(func(ctx context.Context) error { return d.controller.Write(ctx, req, true) }, nil)
-		}
-	}, d.win)
 }

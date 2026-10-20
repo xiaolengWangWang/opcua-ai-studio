@@ -14,6 +14,7 @@ import (
 
 	sdk "github.com/gopcua/opcua"
 	"github.com/gopcua/opcua/ua"
+	"github.com/gopcua/opcua/uacp"
 )
 
 // DefaultPorts are the usual OPC UA ports: the standard 4840 and 4841, WinCC
@@ -25,7 +26,7 @@ const DefaultPorts = "4840, 4841, 4862, 4890, 48010, 49320, 53530, 62541"
 const (
 	maxScanHosts   = 4096
 	maxScanTargets = 40000
-	ScanWorkers    = 256
+	ScanWorkers    = 512
 	probeWorkers   = 32
 	ConnectTimeout = 500 * time.Millisecond
 	// DialRate paces connection attempts, so a large search does not flood
@@ -59,17 +60,20 @@ var virtualNames = []string{"tun", "tap", "vpn", "wireguard", "zerotier", "tails
 // searched as the /24 around this computer.
 const maxLocalBits = 22
 
-// LocalNetworks lists this computer's IPv4 networks with their real masks,
-// the default route's first; link-local addresses and /31 or /32 routes,
-// which VPNs use, are left out.
-func LocalNetworks() []Network {
-	primary := ""
-	// No packet is sent: the system only picks the route to the address.
-	if c, err := net.Dial("udp4", "8.8.8.8:80"); err == nil {
-		primary = c.LocalAddr().(*net.UDPAddr).IP.String()
-		c.Close()
-	}
-	var out []Network
+// link is an IPv4 address of this computer and the network its adapter
+// reaches directly, with the real mask.
+type link struct {
+	name    string
+	addr    netip.Addr
+	prefix  netip.Prefix
+	virtual bool
+}
+
+// links lists this computer's IPv4 addresses on adapters that are up;
+// loopback, link-local addresses and /31 or /32 routes, which VPNs use, are
+// left out.
+func links() []link {
+	var out []link
 	ifaces, _ := net.Interfaces()
 	for _, i := range ifaces {
 		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
@@ -84,15 +88,35 @@ func LocalNetworks() []Network {
 				continue
 			}
 			ip, _ := netip.AddrFromSlice(n.IP.To4())
-			bits, _ := n.Mask.Size()
-			if bits > 30 {
-				continue
+			if bits, _ := n.Mask.Size(); bits <= 30 {
+				out = append(out, link{i.Name, ip, netip.PrefixFrom(ip, bits).Masked(), virtual})
 			}
-			if bits < maxLocalBits {
-				bits = 24
-			}
-			p := netip.PrefixFrom(ip, bits).Masked()
-			out = append(out, Network{Interface: i.Name, Prefix: p.String(), Hosts: 1<<(32-bits) - 2, Primary: ip.String() == primary && !virtual, Virtual: virtual})
+		}
+	}
+	return out
+}
+
+// LocalNetworks lists this computer's IPv4 networks with their real masks,
+// the default route's first. When a proxy's TUN adapter holds the default
+// route, the first real adapter's network counts as this computer's own.
+func LocalNetworks() []Network {
+	primary := ""
+	// No packet is sent: the system only picks the route to the address.
+	if c, err := net.Dial("udp4", "8.8.8.8:80"); err == nil {
+		primary = c.LocalAddr().(*net.UDPAddr).IP.String()
+		c.Close()
+	}
+	var out []Network
+	for _, l := range links() {
+		p := l.prefix
+		if p.Bits() < maxLocalBits {
+			p = netip.PrefixFrom(l.addr, 24).Masked()
+		}
+		out = append(out, Network{Interface: l.name, Prefix: p.String(), Hosts: 1<<(32-p.Bits()) - 2, Primary: l.addr.String() == primary && !l.virtual, Virtual: l.virtual})
+	}
+	if !slices.ContainsFunc(out, func(n Network) bool { return n.Primary }) {
+		if i := slices.IndexFunc(out, func(n Network) bool { return !n.Virtual }); i >= 0 {
+			out[i].Primary = true
 		}
 	}
 	// The default route's network first, then real adapters, then virtual ones.
@@ -229,6 +253,12 @@ func ParsePorts(text string) ([]int, error) {
 // server found for the servers registered with it, as a local discovery
 // server lists them. progress reports the addresses tried out of the total;
 // found receives each server as soon as it is known.
+//
+// A host on a network of this computer is reached from that adapter's
+// address: a proxy's TUN adapter holding the default route would otherwise
+// accept every port itself and relay each request. The first port is tried
+// on every host; the others only on hosts that answered it or ARP, so absent
+// hosts cost one attempt instead of one per port.
 func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Duration, progress func(done, total int), found func(Found)) ([]Found, error) {
 	if len(hosts)*len(ports) > maxScanTargets {
 		return nil, fmt.Errorf("主机数 × 端口数超过 %d，请缩小网段或减少端口", maxScanTargets)
@@ -239,10 +269,23 @@ func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Dur
 	// A closed or filtered port should not hold a worker for the full timeout;
 	// a LAN host answers a connect within milliseconds.
 	connect := min(timeout, ConnectTimeout)
+	ll := links()
+	local := sources(hosts, ll)
 	var mu, pmu sync.Mutex
 	var servers []Found
 	seen := map[string]bool{}
+	answered := map[string]bool{}
 	done, total := 0, len(hosts)*len(ports)
+	// Progress has its own lock: a slow callback must not hold up the
+	// servers being recorded.
+	tick := func(n int) {
+		pmu.Lock()
+		done += n
+		if progress != nil {
+			progress(done, total)
+		}
+		pmu.Unlock()
+	}
 	// Every scanned address is kept: PLCs of one model often share an
 	// application URI. A registered server is dropped when its URI was
 	// found already, as a discovery server lists itself under its host name.
@@ -264,13 +307,14 @@ func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Dur
 	for range probeWorkers {
 		probes.Go(func() {
 			for u := range opened {
-				f := describe(ctx, u, timeout)
+				from := local[hostOf(u)].addr
+				f := describe(ctx, u, timeout, from)
 				if f.Error != "" {
 					continue
 				}
 				publish(f, false)
 				// Servers registered with a discovery server may listen elsewhere.
-				apps, err := findServers(ctx, u, timeout)
+				apps, err := findServers(ctx, u, timeout, from)
 				if err != nil {
 					continue
 				}
@@ -287,52 +331,60 @@ func Discover(ctx context.Context, hosts []string, ports []int, timeout time.Dur
 			}
 		})
 	}
-	targets := make(chan string)
-	var scans sync.WaitGroup
-	for range min(ScanWorkers, total) {
-		scans.Go(func() {
-			dialer := net.Dialer{Timeout: connect}
-			for addr := range targets {
-				conn, err := dialer.DialContext(ctx, "tcp", addr)
-				if err == nil {
-					conn.Close()
-					u := "opc.tcp://" + addr
-					mu.Lock()
-					seen[u] = true
-					mu.Unlock()
-					opened <- u
-				}
-				// Progress has its own lock: a slow callback must not hold up
-				// the servers being recorded.
-				pmu.Lock()
-				done++
-				if progress != nil {
-					progress(done, total)
-				}
-				pmu.Unlock()
-			}
-		})
-	}
-	// Port by port, so the usual 4840 servers on every host come first.
 	pace := time.NewTicker(time.Second / DialRate)
 	defer pace.Stop()
-feed:
-	for _, p := range ports {
-		for _, h := range hosts {
-			select {
-			case <-pace.C:
-			case <-ctx.Done():
-				break feed
-			}
-			select {
-			case targets <- net.JoinHostPort(h, strconv.Itoa(p)):
-			case <-ctx.Done():
-				break feed
+	// scan connects to every host on the ports, port by port so the usual
+	// 4840 servers come first, and returns once each address is tried.
+	scan := func(hosts []string, ports []int) {
+		targets := make(chan [2]string)
+		var scans sync.WaitGroup
+		for range min(ScanWorkers, len(hosts)*len(ports)) {
+			scans.Go(func() {
+				for t := range targets {
+					dialer := net.Dialer{Timeout: connect}
+					if l, ok := local[t[0]]; ok {
+						dialer.LocalAddr = &net.TCPAddr{IP: l.addr.AsSlice()}
+					}
+					conn, err := dialer.DialContext(ctx, "tcp", t[1])
+					if err == nil {
+						conn.Close()
+						u := "opc.tcp://" + t[1]
+						mu.Lock()
+						seen[u] = true
+						answered[t[0]] = true
+						mu.Unlock()
+						opened <- u
+					}
+					tick(1)
+				}
+			})
+		}
+	feed:
+		for _, p := range ports {
+			for _, h := range hosts {
+				select {
+				case <-pace.C:
+				case <-ctx.Done():
+					break feed
+				}
+				select {
+				case targets <- [2]string{h, net.JoinHostPort(h, strconv.Itoa(p))}:
+				case <-ctx.Done():
+					break feed
+				}
 			}
 		}
+		close(targets)
+		scans.Wait()
 	}
-	close(targets)
-	scans.Wait()
+	scan(hosts, ports[:1])
+	if len(ports) > 1 && ctx.Err() == nil {
+		live := liveHosts(hosts, answered, local, neighborTable())
+		if skipped := len(hosts) - len(live); skipped > 0 {
+			tick(skipped * (len(ports) - 1))
+		}
+		scan(live, ports[1:])
+	}
 	close(opened)
 	probes.Wait()
 	if err := ctx.Err(); err != nil {
@@ -344,7 +396,8 @@ feed:
 	for range min(probeWorkers, len(registered)) {
 		late.Go(func() {
 			for u := range jobs {
-				publish(describe(ctx, u, timeout), true)
+				h := hostOf(u)
+				publish(describe(ctx, u, timeout, sources([]string{h}, ll)[h].addr), true)
 			}
 		})
 	}
@@ -392,18 +445,73 @@ func CompareURL(a, b string) int {
 	return portA - portB
 }
 
-func findServers(ctx context.Context, target string, timeout time.Duration) ([]*ua.ApplicationDescription, error) {
+// sources maps each host on a network of this computer to that link, so its
+// connections leave from the adapter's own address.
+func sources(hosts []string, ll []link) map[string]link {
+	out := map[string]link{}
+	for _, h := range hosts {
+		a, err := netip.ParseAddr(h)
+		if err != nil {
+			continue
+		}
+		for _, l := range ll {
+			if l.prefix.Contains(a) {
+				out[h] = l
+				break
+			}
+		}
+	}
+	return out
+}
+
+// liveHosts keeps the hosts worth trying on the other ports: those off this
+// computer's real networks or behind a virtual adapter, which have no ARP to
+// go by, those that answered, and those whose ARP was answered. A nil table
+// means it could not be read, and every host is kept.
+func liveHosts(hosts []string, answered map[string]bool, local map[string]link, table map[netip.Addr]bool) []string {
+	if table == nil {
+		return hosts
+	}
+	var out []string
+	for _, h := range hosts {
+		l, onLink := local[h]
+		a, _ := netip.ParseAddr(h)
+		if !onLink || l.virtual || answered[h] || table[a] {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func hostOf(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// options dial from the given address, when there is one.
+func options(timeout time.Duration, from netip.Addr) []sdk.Option {
+	dialer := &net.Dialer{Timeout: timeout}
+	if from.IsValid() {
+		dialer.LocalAddr = &net.TCPAddr{IP: from.AsSlice()}
+	}
+	return []sdk.Option{sdk.Dialer(&uacp.Dialer{Dialer: dialer, ClientACK: uacp.DefaultClientACK}), sdk.RequestTimeout(timeout)}
+}
+
+func findServers(ctx context.Context, target string, timeout time.Duration, from netip.Addr) ([]*ua.ApplicationDescription, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return sdk.FindServers(ctx, target, sdk.DialTimeout(timeout), sdk.RequestTimeout(timeout))
+	return sdk.FindServers(ctx, target, options(timeout, from)...)
 }
 
 // describe reads a server's endpoints; a port that is not OPC UA fails.
-func describe(ctx context.Context, target string, timeout time.Duration) Found {
+func describe(ctx context.Context, target string, timeout time.Duration, from netip.Addr) Found {
 	f := Found{URL: target}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	ee, err := sdk.GetEndpoints(ctx, target, sdk.DialTimeout(timeout), sdk.RequestTimeout(timeout))
+	ee, err := sdk.GetEndpoints(ctx, target, options(timeout, from)...)
 	if err != nil {
 		f.Error = err.Error()
 		return f

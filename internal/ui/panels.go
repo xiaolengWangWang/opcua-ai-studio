@@ -35,7 +35,6 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 			d.showError(err)
 			return
 		}
-		d.allowWrite.SetChecked(false)
 		d.loadReference(d.referenceKey(cfg.Target))
 		d.run(func(ctx context.Context) error { return d.controller.Connect(ctx, cfg) }, func() {
 			d.saveInputs()
@@ -50,11 +49,9 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 	d.connectBtn = widget.NewButtonWithIcon("连接", theme.LoginIcon(), connect)
 	d.connectBtn.Importance = widget.HighImportance
 	d.disconnectBtn = widget.NewButtonWithIcon("断开", theme.LogoutIcon(), func() {
-		d.allowWrite.SetChecked(false)
 		d.run(func(context.Context) error { return d.controller.Disconnect() }, nil)
 	})
 	d.demoBtn = widget.NewButtonWithIcon("本机演示", theme.MediaPlayIcon(), func() {
-		d.allowWrite.SetChecked(false)
 		d.loadReference(demoReference)
 		d.run(d.controller.StartDemo, func() {
 			d.setEndpoint(d.controller.Snapshot().DemoTarget)
@@ -72,7 +69,6 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 		})
 	})
 	d.stopDemoBtn = widget.NewButtonWithIcon("停止演示", theme.MediaStopIcon(), func() {
-		d.allowWrite.SetChecked(false)
 		d.run(func(context.Context) error { return d.controller.StopDemo() }, nil)
 	})
 	d.discoverBtn = widget.NewButtonWithIcon("发现端点", theme.ListIcon(), func() {
@@ -118,13 +114,19 @@ func (d *Desktop) connectionPanel() fyne.CanvasObject {
 	small := func(text string) *widget.Label {
 		return widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	}
+	d.historyBtn = widget.NewButtonWithIcon("", theme.HistoryIcon(), d.connectionHistoryDialog)
 	h := d.profile.MinSize().Height
 	profile := container.NewGridWrap(fyne.NewSize(170, h), d.profile)
 	port := container.NewGridWrap(fyne.NewSize(76, h), d.port)
 	d.status.Truncation = fyne.TextTruncateEllipsis
 	status := container.NewGridWrap(fyne.NewSize(230, h), d.status)
-	return container.NewBorder(nil, nil, container.NewHBox(profile, small("地址")),
-		container.NewHBox(small("端口"), port, d.securityBtn, d.scanBtn, d.connectBtn, d.disconnectBtn, d.refBox, d.activity, status, d.updateBtn), d.host)
+	// The busy indicator and the reference point keep their width, so the
+	// address does not narrow while an operation such as a write runs.
+	slot := canvas.NewRectangle(color.Transparent)
+	slot.SetMinSize(fyne.NewSize(h, h))
+	busy := container.NewStack(slot, d.activity)
+	return container.NewBorder(nil, nil, container.NewHBox(profile, d.historyBtn, small("地址")),
+		container.NewHBox(small("端口"), port, d.securityBtn, d.scanBtn, d.connectBtn, d.disconnectBtn, d.refBox, busy, status, d.updateBtn), d.host)
 }
 
 // updateSecuritySummary names the security in force at the top of the
@@ -231,22 +233,8 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 		d.run(func(ctx context.Context) error { return d.controller.StartPolling(ctx, pp, interval) }, nil)
 	})
 	d.stopPollBtn = widget.NewButtonWithIcon("停止轮询", theme.MediaPauseIcon(), func() { d.controller.StopPolling(); d.refresh(d.controller.Snapshot()) })
-	// Writing sets the single point card's point, so it lives in that card.
-	d.writeValue = widget.NewEntry()
-	d.writeValue.SetPlaceHolder("设定值：标量或 JSON 数组，例如 12.5、中文文本、[1,2,3]")
-	d.writeValue.OnSubmitted = func(string) { d.confirmWrite() }
-	d.writeChoice = widget.NewRadioGroup([]string{"true", "false"}, func(v string) {
-		if v != "" {
-			d.writeValue.SetText(v)
-		}
-	})
-	d.writeChoice.Horizontal = true
-	d.writeChoice.Hide()
-	d.allowWrite = widget.NewCheck("允许写入", func(bool) { d.controls() })
-	d.writeBtn = widget.NewButtonWithIcon("写入并读回", theme.ConfirmIcon(), d.confirmWrite)
-	d.writeBtn.Importance = widget.DangerImportance
-	d.writeStatus = widget.NewLabel("")
-	d.writeStatus.Wrapping = fyne.TextWrapWord
+	// The single point card writes through the write dialog.
+	d.singleWriteBtn = widget.NewButtonWithIcon("写入…", theme.DocumentCreateIcon(), d.writeSingle)
 	d.singleNode = widget.NewSelectEntry(nil)
 	d.singleNode.SetPlaceHolder("NodeID 或 viSCADA 属性标识，可下拉选择")
 	d.singleNode.OnChanged = func(text string) {
@@ -255,7 +243,7 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 			d.singleCount.SetText("1")
 		}
 	}
-	d.singleKind = widget.NewSelect(device.Types, func(string) { d.updateWriteInput() })
+	d.singleKind = widget.NewSelect(device.Types, nil)
 	d.singleKind.SetSelected("Auto")
 	d.singleCount = widget.NewEntry()
 	d.singleCount.SetText("1")
@@ -272,7 +260,7 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 		}
 	})
 	d.referenceBtn = widget.NewButtonWithIcon("设为基准点位", theme.ConfirmIcon(), d.setReference)
-	d.allRoot = widget.NewEntry()
+	d.allRoot = widget.NewSelectEntry([]string{"i=85"})
 	d.allRoot.SetText("i=85")
 	d.allRoot.SetPlaceHolder("i=85 读取全部对象；ns=2 读取命名空间 2")
 	d.fullBtn = widget.NewButtonWithIcon("全量读取", theme.DownloadIcon(), func() { d.startFullRead(d.allRoot.Text) })
@@ -331,8 +319,16 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	d.table = newTextTable(func() int { return len(d.visible) }, pointHeader, d.pointCell, d.pointStyle, pointWidths)
 	sortableHeader(d.table, pointHeader, d.sortMark, d.sortBy)
 	d.table.OnSelected = func(id widget.TableCellID) {
-		if id.Row >= 0 && id.Row < len(d.visible) {
-			d.selectResult(d.snapshot.Results[d.visible[id.Row]])
+		if id.Row < 0 || id.Row >= len(d.visible) {
+			return
+		}
+		r := d.snapshot.Results[d.visible[id.Row]]
+		d.selectResult(r)
+		// Clicking a control point's value opens the write dialog; the cell
+		// is unselected so the next click opens it again.
+		if id.Col == 4 && r.Writable() && d.snapshot.State == "connected" && d.busy == 0 {
+			d.table.UnselectAll()
+			d.writeDialog(r)
 		}
 	}
 	d.tree = d.newPointTree()
@@ -341,6 +337,13 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	expand := widget.NewButtonWithIcon("", theme.MenuExpandIcon(), func() { d.tree.OpenAllBranches() })
 	collapse := widget.NewButtonWithIcon("", theme.MenuDropUpIcon(), func() { d.tree.CloseAllBranches() })
 	treeTools := container.NewHBox(expand, collapse)
+	d.trendRange = widget.NewSelect(trendRanges, nil)
+	d.trendRange.SetSelected(trendRanges[0])
+	d.trendRange.OnChanged = func(string) {
+		d.resetTrends()
+		d.refreshViews()
+	}
+	trendTools := container.NewGridWrap(fyne.NewSize(92, d.trendRange.MinSize().Height), d.trendRange)
 	views := map[string]fyne.CanvasObject{"表格": d.table, "树状": d.tree, "卡片": d.cards, "趋势": d.trends}
 	d.viewMode = widget.NewSelect(viewModes, func(mode string) {
 		if d.tree == nil {
@@ -359,6 +362,11 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 			d.refreshTree()
 		} else {
 			treeTools.Hide()
+		}
+		if mode == "趋势" {
+			trendTools.Show()
+		} else {
+			trendTools.Hide()
 		}
 		d.refreshViews()
 		d.updateMenu()
@@ -381,15 +389,10 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 		}
 	})
 	d.foldBtn = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), d.toggleSidebar)
-	bold := func(text string) *widget.Label {
-		return widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	}
 	form := func(items ...*widget.FormItem) *widget.Form { return widget.NewForm(items...) }
 	single := container.NewVBox(d.singleNode,
 		form(widget.NewFormItem("类型", d.singleKind), widget.NewFormItem("数量", d.singleCount)),
-		d.verifyBtn, d.singleResult, container.NewGridWithColumns(2, d.copyIdentBtn, d.referenceBtn),
-		widget.NewSeparator(), bold("写入设定值"), d.writeChoice, d.writeValue,
-		container.NewBorder(nil, nil, d.allowWrite, nil, d.writeBtn), d.writeStatus)
+		container.NewGridWithColumns(2, d.verifyBtn, d.singleWriteBtn), d.singleResult, container.NewGridWithColumns(2, d.copyIdentBtn, d.referenceBtn))
 	list := container.NewVBox(d.addresses,
 		form(widget.NewFormItem("类型", d.kind), widget.NewFormItem("数量", d.count), widget.NewFormItem("轮询间隔", d.interval)),
 		container.NewGridWithColumns(3, d.readBtn, d.pollBtn, d.stopPollBtn))
@@ -410,9 +413,13 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	fixed := func(w float32, o fyne.CanvasObject) fyne.CanvasObject {
 		return container.NewGridWrap(fyne.NewSize(w, o.MinSize().Height), o)
 	}
-	controls := container.NewHBox(clearSearch, fixed(76, d.searchMode), fixed(124, d.resultFilter), fixed(80, d.viewMode), treeTools, d.autoRefresh, fixed(64, d.refreshInterval), d.writeSelectedBtn, d.exportBtn)
+	controls := container.NewHBox(clearSearch, fixed(76, d.searchMode), fixed(124, d.resultFilter), fixed(80, d.viewMode), treeTools, trendTools, d.autoRefresh, fixed(64, d.refreshInterval), d.writeSelectedBtn, d.exportBtn)
 	toolbar := container.NewBorder(nil, nil, d.foldBtn, controls, d.search)
-	results := container.NewBorder(container.NewVBox(toolbar, d.pointSummary, d.jobBox, d.emptyHint), nil, nil, nil, container.NewStack(d.table, d.tree, d.cards, d.trends))
+	// The ? before the counts explains GOOD, BAD and the others.
+	qualityHelp := widget.NewButtonWithIcon("", theme.QuestionIcon(), d.showQualityHelp)
+	qualityHelp.Importance = widget.LowImportance
+	summary := container.NewBorder(nil, nil, qualityHelp, nil, d.pointSummary)
+	results := container.NewBorder(container.NewVBox(toolbar, summary, d.jobBox, d.emptyHint), nil, nil, nil, container.NewStack(d.table, d.tree, d.cards, d.trends))
 	// In a box the sections keep their own height instead of sharing the
 	// column's, which left gaps under the open ones.
 	d.split = container.NewHSplit(container.NewVScroll(container.NewVBox(d.sidebar)), results)
@@ -421,31 +428,13 @@ func (d *Desktop) pointsPanel() fyne.CanvasObject {
 	return d.split
 }
 
-// updateWriteInput offers true and false for a Boolean point instead of text.
-func (d *Desktop) updateWriteInput() {
-	if d.writeChoice == nil || d.writeValue == nil {
-		return
-	}
-	if d.singleKind.Selected != "Boolean" {
-		d.writeChoice.Hide()
-		d.writeValue.Show()
-		return
-	}
-	d.writeValue.Hide()
-	d.writeChoice.Show()
-	if v := strings.ToLower(strings.TrimSpace(d.writeValue.Text)); v == "true" || v == "false" {
-		d.writeChoice.SetSelected(v)
-	} else {
-		d.writeChoice.SetSelected("")
-		d.writeValue.SetText("")
-	}
-}
 func (d *Desktop) browsePanel() fyne.CanvasObject {
-	d.browseRoot = widget.NewEntry()
+	d.browseRoot = widget.NewSelectEntry([]string{"i=85"})
 	d.browseRoot.SetText("i=85")
 	d.browseRoot.SetPlaceHolder("i=85 为 Objects；ns=2 为命名空间 2 的节点")
 	browse := func() {
 		node := d.browseRoot.Text
+		d.rememberRoot(node)
 		d.run(func(ctx context.Context) error { return d.controller.Browse(ctx, node) }, nil)
 	}
 	d.browseRoot.OnSubmitted = func(string) { browse() }

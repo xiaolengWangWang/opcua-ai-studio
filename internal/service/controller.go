@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/gopcua/opcua/ua"
 	"opcua-ai-studio/internal/device"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"opcua-ai-studio/internal/opcua"
 	"opcua-ai-studio/internal/recorder"
@@ -28,7 +30,8 @@ type Snapshot struct {
 	ScanStatus, BrowseStatus                                                       string
 	Revision, Generation                                                           uint64
 	State, Target, Family, DemoTarget, LastError, RecordDir, RecordError, Readback string
-	Polling, AutoRefresh                                                           bool // AutoRefresh: the poll refreshes the shown points
+	Polling, AutoRefresh                                                           bool  // AutoRefresh: the poll refreshes the shown points
+	Session                                                                        int64 // the connection's ID in the record database
 	Results                                                                        []device.ReadResult
 	Nodes                                                                          []device.Node
 	WriteResult                                                                    *device.WriteResult
@@ -93,12 +96,22 @@ func New(o Options) *Controller {
 	}
 	return c
 }
+
+// logLocked shows a run log line and keeps it in the record database.
 func (c *Controller) logLocked(text string) {
-	c.snap.Logs = append(c.snap.Logs, time.Now().Format("15:04:05")+" "+text)
+	now := time.Now()
+	c.snap.Logs = append(c.snap.Logs, now.Format("15:04:05")+" "+text)
 	if len(c.snap.Logs) > 100 {
 		c.snap.Logs = c.snap.Logs[len(c.snap.Logs)-100:]
 	}
 	c.snap.Revision++
+	if c.rec != nil {
+		var session int64
+		if c.s != nil {
+			session = c.s.id
+		}
+		c.rec.Line(session, now, text)
+	}
 }
 func (c *Controller) begin() error {
 	c.mu.Lock()
@@ -233,6 +246,7 @@ func (c *Controller) connect(ctx context.Context, cfg Config, resume uint64) (ui
 		c.mu.Unlock()
 		return 0, context.Canceled
 	}
+	started := time.Now()
 	old := c.detachLocked("connecting")
 	gen := c.snap.Generation
 	sctx, cancel := context.WithCancel(ctx)
@@ -247,6 +261,7 @@ func (c *Controller) connect(ctx context.Context, cfg Config, resume uint64) (ui
 		}
 	}
 	c.s = s
+	c.snap.Session = s.id
 	c.snap.Target = cfg.Target
 	c.snap.Family = "OPC UA"
 	c.snap.Reference = nil
@@ -265,15 +280,16 @@ func (c *Controller) connect(ctx context.Context, cfg Config, resume uint64) (ui
 	c.finishSession(old)
 	o.Observer = device.ObserverFunc(func(event device.Event) {
 		event.Family = "OPC UA"
-		// A bulk request of 5000 points would log megabytes and slow the read
-		// it records; its results stay complete in the result table.
+		// The database keeps every target and result, compressed. The request
+		// table keeps the first ones: a bulk request of 5000 points held in
+		// memory per row would slow the read it shows.
+		if c.rec != nil && s.id != 0 {
+			c.rec.Record(s.id, event)
+		}
 		if n := len(event.Targets); n > packetPoints {
 			event.Total = n
 			event.Targets = event.Targets[:packetPoints]
 			event.Results = event.Results[:min(len(event.Results), packetPoints)]
-		}
-		if c.rec != nil && s.id != 0 {
-			c.rec.Record(s.id, event)
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -302,6 +318,10 @@ func (c *Controller) connect(ctx context.Context, cfg Config, resume uint64) (ui
 		s.cancel()
 		c.mu.Unlock()
 		c.end(s)
+		// A reconnect retries every few seconds; only the user's attempts count.
+		if resume == 0 {
+			c.recordConnection(s, started, false, e, nil)
+		}
 		return gen, e
 	}
 	s.d = d
@@ -312,7 +332,30 @@ func (c *Controller) connect(ctx context.Context, cfg Config, resume uint64) (ui
 	go c.watch(s)
 	c.mu.Unlock()
 	c.describe(ctx)
+	c.mu.Lock()
+	info := c.snap.Server
+	c.mu.Unlock()
+	c.recordConnection(s, started, resume != 0, nil, info)
 	return gen, nil
+}
+
+// recordConnection keeps a connection's settings, outcome and server
+// information in the record database.
+func (c *Controller) recordConnection(s *session, started time.Time, reconnect bool, e error, info *opcua.ServerInfo) {
+	if c.rec == nil {
+		return
+	}
+	r := recorder.Connection{Time: started, Session: s.id, Target: s.cfg.Target, Policy: s.cfg.Policy, Mode: s.cfg.Mode, User: s.cfg.Username, OK: e == nil, Reconnect: reconnect}
+	if e != nil {
+		r.Error = e.Error()
+	}
+	if info != nil {
+		r.Server = strings.TrimSpace(info.Product + " " + info.Version)
+		if b, err := json.Marshal(info); err == nil {
+			r.Detail = string(b)
+		}
+	}
+	c.rec.Connect(r)
 }
 func (c *Controller) acquire(ctx context.Context, generation uint64) (*session, context.Context, func(), error) {
 	c.mu.Lock()

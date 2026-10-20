@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,8 +11,6 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"opcua-ai-studio/internal/device"
-	"opcua-ai-studio/internal/service"
 	"opcua-ai-studio/platform"
 )
 
@@ -43,6 +40,7 @@ func (d *Desktop) buildMenu() {
 		action("复制结果", d.copyPointRows),
 		fyne.NewMenuItemSeparator(),
 		action("打开记录目录", d.openRecords),
+		action("历史日志…", d.logHistoryDialog),
 		fyne.NewMenuItemSeparator(),
 		quit,
 	)
@@ -57,6 +55,7 @@ func (d *Desktop) buildMenu() {
 		fyne.NewMenuItemSeparator(),
 		button("保存连接配置…", d.saveProfileBtn),
 		button("删除当前连接配置", d.deleteProfileBtn),
+		action("连接记录…", d.connectionHistoryDialog),
 		fyne.NewMenuItemSeparator(),
 		d.menuAutoReconnect,
 		d.menuAutoFullRead,
@@ -97,6 +96,7 @@ func (d *Desktop) buildMenu() {
 	}
 	help := fyne.NewMenu("帮助",
 		action("操作手册", d.showPointHelp),
+		action("质量与统计说明", d.showQualityHelp),
 		button("检查更新", d.checkUpdateBtn),
 		action("关于 OPC UA AI Studio", d.showAbout),
 	)
@@ -183,95 +183,4 @@ func (d *Desktop) settingsDialog(security fyne.CanvasObject) dialog.Dialog {
 	box := dialog.NewCustom("连接设置", "关闭", content, d.win)
 	box.Resize(fyne.NewSize(780, 0))
 	return box
-}
-
-// writeDialog writes one point directly: its current value is shown and
-// prefilled, a Boolean offers true and false, and the write needs its own
-// 允许写入, then is read back.
-func (d *Desktop) writeDialog(r device.ReadResult) {
-	s := d.controller.Snapshot()
-	if s.State != "connected" {
-		d.showError(fmt.Errorf("请先连接"))
-		return
-	}
-	kind := string(r.Kind())
-	types := widget.NewSelect(device.Types[1:], nil)
-	types.SetSelected(kind)
-	if kind == "" {
-		types.PlaceHolder = "请选择类型"
-	}
-	current := device.FormatValue(r.Value)
-	if r.Value.Type == "" {
-		current = "未读取"
-	}
-	value := widget.NewEntry()
-	if r.Value.Type != "" && r.Value.Elements == nil {
-		value.SetText(current)
-	}
-	choice := widget.NewRadioGroup([]string{"true", "false"}, func(v string) { value.SetText(v) })
-	choice.Horizontal = true
-	sync := func(kind string) {
-		if kind == "Boolean" {
-			value.Hide()
-			choice.Show()
-			choice.SetSelected(map[bool]string{true: value.Text, false: ""}[value.Text == "true" || value.Text == "false"])
-		} else {
-			choice.Hide()
-			value.Show()
-		}
-	}
-	types.OnChanged = sync
-	sync(kind)
-	allow := widget.NewCheck("允许写入（写入会改变现场设备的设定值或控制状态）", nil)
-	status := widget.NewLabel("")
-	status.Wrapping = fyne.TextWrapWord
-	var box dialog.Dialog
-	write := widget.NewButtonWithIcon("写入并读回", theme.ConfirmIcon(), nil)
-	write.Importance = widget.DangerImportance
-	write.Disable()
-	allow.OnChanged = func(on bool) {
-		if on {
-			write.Enable()
-		} else {
-			write.Disable()
-		}
-	}
-	n := 1
-	if r.Value.Elements != nil {
-		n = max(1, len(r.Value.Elements))
-	}
-	write.OnTapped = func() {
-		if types.Selected == "" {
-			status.SetText("请先选择类型")
-			return
-		}
-		a := device.Address{NodeID: r.Address.NodeID, Type: device.DataType(types.Selected), Count: n}
-		if _, err := device.ParseValue(a, value.Text); err != nil {
-			status.SetText(err.Error())
-			return
-		}
-		req := service.WriteRequest{Point: service.Point{Address: a.NodeID, Type: a.Type, Count: n}, Value: value.Text, Generation: d.controller.Snapshot().Generation}
-		allow.SetChecked(false)
-		var werr error
-		d.run(func(ctx context.Context) error { werr = d.controller.Write(ctx, req, true); return nil }, func() {
-			s := d.controller.Snapshot()
-			switch {
-			case s.WriteResult != nil && werr == nil:
-				status.SetText(fmt.Sprintf("写入：%s · 读回%s", s.WriteResult.State, s.Readback))
-			case werr != nil:
-				status.SetText("写入失败：" + werr.Error())
-			}
-		})
-	}
-	form := widget.NewForm(
-		widget.NewFormItem("Endpoint", widget.NewLabel(s.Target)),
-		widget.NewFormItem("NodeID", widget.NewLabel(r.Address.NodeID)),
-		widget.NewFormItem("名称", widget.NewLabel(or(r.DisplayName, "—"))),
-		widget.NewFormItem("类型", types),
-		widget.NewFormItem("当前值", widget.NewLabel(current)),
-		widget.NewFormItem("写入值", container.NewVBox(value, choice)),
-	)
-	box = dialog.NewCustom("写入点位", "关闭", container.NewVBox(form, allow, write, status), d.win)
-	box.Resize(fyne.NewSize(560, 0))
-	box.Show()
 }

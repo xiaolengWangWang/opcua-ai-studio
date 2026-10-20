@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"opcua-ai-studio/internal/device"
@@ -181,12 +182,27 @@ func runSmoke(ctx context.Context, c *service.Controller, capture func() image.I
 			return err
 		}
 	}
+	// Ten minutes of samples in the record database draw the trends.
+	now := time.Now()
+	for i := range 300 {
+		at := now.Add(time.Duration(i-300) * 2 * time.Second)
+		wave := math.Sin(float64(i) / 24)
+		c.RecordSamples(map[string]service.Sample{
+			simulator.ChineseNodes[0]: {Time: at, Value: 95.5 + 2.5*wave},
+			"ns=2;s=Temperature":      {Time: at, Value: 21.5 + math.Cos(float64(i)/37)},
+			simulator.CounterNode:     {Time: at, Value: float64(100 + i/12)},
+		})
+	}
 	// The search narrows the table, the tree and the export alike.
 	for _, shot := range []struct {
 		name, search, view string
 		tab                int
-	}{{"native-gui-cards.png", "", "卡片", 0}, {"native-gui-tree.png", "热力站", "树状", 0}, {"native-gui-packets.png", "热力站", "树状", 2}} {
+	}{{"native-gui-cards.png", "", "卡片", 0}, {"native-gui-trend.png", "", "趋势", 0}, {"native-gui-tree.png", "热力站", "树状", 0}, {"native-gui-packets.png", "热力站", "树状", 2}} {
 		view(shot.search, shot.view, shot.tab)
+		if shot.view == "趋势" {
+			time.Sleep(2 * time.Second) // the charts read the database in the background
+			view(shot.search, shot.view, shot.tab)
+		}
 		if im = capture(); im == nil {
 			return fmt.Errorf("没有截图 %s", shot.name)
 		}

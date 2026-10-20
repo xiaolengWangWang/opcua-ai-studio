@@ -98,7 +98,7 @@ func TestBatchKeepsInterleavedSessionsAcrossRotation(t *testing.T) {
 		if i%2 != 0 {
 			id = second
 		}
-		batch[i] = item{id, device.Event{Time: time.Unix(0, 0), RequestID: uint64(i + 1),
+		batch[i] = item{session: id, p: device.Event{Time: time.Unix(0, 0), RequestID: uint64(i + 1),
 			Dir: device.DirTX, Protocol: device.ProtocolModbusTCP, Status: device.StatusSent, Raw: []byte{1, 3}}}
 	}
 	if err := r.insert(batch); err != nil {
@@ -203,7 +203,7 @@ func BenchmarkInsertBatchSameSession(b *testing.B) {
 	seedQueryArchive(b, r, 1, 0, 0)
 	batch := make([]item, 500)
 	for i := range batch {
-		batch[i] = item{1, device.Event{Time: time.Unix(0, 0), RequestID: uint64(i + 1),
+		batch[i] = item{session: 1, p: device.Event{Time: time.Unix(0, 0), RequestID: uint64(i + 1),
 			Dir: device.DirRX, Protocol: device.ProtocolModbusTCP, Status: device.StatusSuccess, Raw: []byte{1, 3, 2, 0, 7}}}
 	}
 	b.ReportAllocs()

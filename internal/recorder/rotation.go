@@ -177,9 +177,12 @@ func (r *Recorder) rotateLocked() error {
 	}
 	old := r.db
 	r.db, r.path = next, path
-	// Closing SQLite checkpoints the WAL when possible. Never rename/delete the
+	// Closing SQLite checkpoints the WAL when possible. Never rename the
 	// archive: a management tool or another process may still have it open.
-	return old.Close()
+	// Only the oldest files go, once all of them exceed MaxTotalBytes.
+	err = old.Close()
+	r.pruneFilesLocked()
+	return err
 }
 
 func (r *Recorder) writeLocked(write func() error) error {

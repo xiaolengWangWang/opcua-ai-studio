@@ -1,8 +1,8 @@
 # OPC UA AI Studio
 
-参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.6.1`。
+参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.7.0`。
 
-Windows 发行包见 [Gitee Release v0.6.1](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.6.1) 或 [GitHub Release v0.6.1](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.6.1)，更新说明见 [版本说明](docs/releases/v0.6.1.md)。发布页提供三种下载：桌面程序单文件 `OPCUAAIStudio-<版本>-Windows-x64.exe`、命令行工具包 `opcua-tools-<版本>-Windows-x64.zip`（opcua-cli 与 opcua-sim），以及包含全部文件的 `OPCUAAIStudio-<版本>-Windows-x64.zip`（程序内更新使用）。
+Windows 发行包见 [Gitee Release v0.7.0](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.7.0) 或 [GitHub Release v0.7.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.7.0)，更新说明见 [版本说明](docs/releases/v0.7.0.md)。发布页提供三种下载：桌面程序单文件 `OPCUAAIStudio-<版本>-Windows-x64.exe`、命令行工具包 `opcua-tools-<版本>-Windows-x64.zip`（opcua-cli 与 opcua-sim），以及包含全部文件的 `OPCUAAIStudio-<版本>-Windows-x64.zip`（程序内更新使用）。
 
 ## Windows 桌面
 
@@ -11,7 +11,7 @@ Windows 发行包见 [Gitee Release v0.6.1](https://gitee.com/xiaolengwangwang/o
 程序启动后在后台检查 Gitee（失败时改用 GitHub）的最新版本，发现新版本时连接栏右侧显示“新版本”按钮，也可点击菜单“帮助 › 检查更新”手动检查。确认后下载发行包，按发布页的 `SHA256SUMS.txt` 校验，替换安装目录中的程序文件并重启；安装目录不可写或校验失败时不改动现有文件。
 
 1. 点击菜单“连接 › 启动本机演示”，读取 `ns=2;s=Counter`，初值为 Int32 42。
-2. 输入 123，勾选“允许写入”，点击“写入并读回”，确认 Endpoint、NodeID、类型和数值。
+2. 在结果表点击 `ns=2;s=Counter` 的值，弹出“写入点位”对话框；输入 123，勾选“允许写入”，点击“写入并读回”。
 3. 查看 `CONFIRMED` 和独立读回“一致”。
 4. 节点浏览页从 `i=85` 浏览 Objects，进入演示命名空间；点击变量追加到清单并填入单点输入。
 5. 点击“全量读取”，演示父节点 `ns=2;i=85` 包含九个变量，其中三个为中文点位（如 `ns=2;s=热力站.一次供水温度`）；可停止并保留部分结果。
@@ -26,7 +26,10 @@ Windows 发行包见 [Gitee Release v0.6.1](https://gitee.com/xiaolengwangwang/o
 14. 结果区点击表头排序，勾选“自动刷新”按间隔原位更新结果中的全部点位（刚变化的值以蓝色标出）；左上角折叠按钮收起左栏，让数据区占满窗口。
 15. “通讯与日志”页按全部 / 异常 / READ / WRITE / BROWSE 筛选、按 NodeID 搜索请求记录，选中一条查看全部目标和结果，统计响应耗时，可导出 CSV。
 16. 不常用的操作收在菜单栏（文件 / 连接 / 读取 / 视图 / 帮助）；“视图”可切换表格、树状、卡片和趋势；在任一视图选中可写点位，点击结果栏“写入”直接写入并读回。
-17. 全量读取、浏览和搜索节点的父节点可只填命名空间，如 `ns=2`；“文件 › 新建窗口”可同时打开多个窗口连接不同服务器。
+17. 全量读取、浏览和搜索节点的父节点可只填命名空间，如 `ns=2`，也可从下拉列表选择服务器的命名空间或最近用过的父节点；“文件 › 新建窗口”可同时打开多个窗口连接不同服务器。
+18. 趋势视图按 10 分钟到 24 小时的时间范围绘制，数据来自记录数据库（压缩保存，重启后仍在）；点击一张图放大查看并复制数据。
+19. 连接栏的时钟按钮（或“连接 › 连接记录”）列出以前的连接：地址、安全、账号、结果、服务器与时长，可一键填入或重连，并查看该次连接的日志与报文。
+20. 统计行前的“?”按钮说明 GOOD、BAD、不存在、可写等计数的含义与处理办法。
 
 单点验证使用独立输入，结果选择不覆盖批量清单。全量读取按 50,000 点设计（上限 60,000 个变量、100,000 个节点）：浏览一次请求多个节点，读取首批 100 点、响应快时加大到每批 5,000 点，单条消息控制在约 0.5 MB，服务器拒绝或超时自动减半，可随时停止。读取同时取得数据类型和读写权限，“读写”列和“可写（控制点位）”筛选标出控制点位。导入、导出和 CSV 在后台运行并显示进度，可随时取消；结果表按需渲染，50,000 点时仍可流畅查看。原始质量 GOOD/BAD/UNCERTAIN 与请求、解析、类型错误分别记录；未收到 DataValue 的质量为 UNKNOWN。CSV 保存冻结快照，包括范围、任务 ID 和完整性，兼容中文并保护 64 位标量整数。完整离线说明见 [操作手册](assets/help/points.md)，也可在程序中点击菜单“帮助 › 操作手册”。
 
@@ -36,7 +39,7 @@ Windows 发行包见 [Gitee Release v0.6.1](https://gitee.com/xiaolengwangwang/o
 
 默认只读，每次 GUI 写入都需要确认，并绑定当前连接；连接变化后旧确认失效。`UNKNOWN` 表示最终状态未知，不自动重发；服务端确认与读回一致分别显示。连接栏分别填写“地址”和“端口”（默认 `4840`），地址下拉保存最近 10 个连接，粘贴完整 `opc.tcp://` 地址自动拆分；安全、账号、证书在齿轮按钮打开的“连接设置”中。“搜索服务器”默认只搜本机所在网段，跳过 VPN、代理隧道等虚拟网卡并限速，也可指定 IP 或网段。“断线自动重连”默认开启：服务器断开或连续 2 次无响应（心跳每 5 秒）时按 2–30 秒间隔重连，保留结果并恢复轮询；重连后须重新勾选“允许写入”。
 
-连接输入和点位保存为独立首选项，密码、API Key、写入值和“允许写入”不保存。SQLite 记录位于 `%AppData%\OPCUAAIStudio\records`，按天 / 50 MB 轮转；正常关闭等待记录排空并释放演示端口。记录内容是服务级请求、结果、NodeID、状态码及时间戳，首版不记录原始线缆字节。应用日志位于 `%AppData%\OPCUAAIStudio\app.log`。
+连接输入和点位保存为独立首选项，密码、API Key、写入值和“允许写入”不保存。SQLite 记录位于 `%AppData%\OPCUAAIStudio\records`，按天分文件、单个文件不超过 50 MB，目录合计超过约 2 GB 时删除最旧的文件；正常关闭等待记录排空并释放演示端口。记录内容是服务级请求与结果（批量请求保存全部点位，压缩存储）、运行日志、连接记录和趋势样本，不记录原始线缆字节。应用日志位于 `%AppData%\OPCUAAIStudio\app.log`。
 
 AI 诊断沿用 DeepSeek 客户端。填入 API Key 或设置 `DEEPSEEK_API_KEY`，冻结并预览证据后点击分析，将预览的 Endpoint、节点值和状态发送到 DeepSeek。AI 仅生成解释，不执行设备操作。模型名称可修改，默认沿用参考项目配置；AI 网络调用不属于本机演示测试。
 

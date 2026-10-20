@@ -62,12 +62,50 @@ CREATE INDEX IF NOT EXISTS sessions_recent ON sessions(started_at DESC, id DESC)
 CREATE INDEX IF NOT EXISTS packets_session ON packets(session_id, id);
 CREATE INDEX IF NOT EXISTS packets_time ON packets(time);
 CREATE INDEX IF NOT EXISTS events_session ON events(session_id, id);
+CREATE TABLE IF NOT EXISTS logs (
+	id         INTEGER PRIMARY KEY,
+	time       INTEGER NOT NULL,           -- Unix 毫秒
+	session_id INTEGER NOT NULL DEFAULT 0, -- 0 表示当时没有连接
+	text       TEXT    NOT NULL            -- 运行日志的一行
+);
+CREATE INDEX IF NOT EXISTS logs_session ON logs(session_id, id);
+CREATE TABLE IF NOT EXISTS connections (
+	id         INTEGER PRIMARY KEY,
+	time       INTEGER NOT NULL,           -- 开始连接，Unix 毫秒
+	session_id INTEGER NOT NULL DEFAULT 0,
+	target     TEXT    NOT NULL,
+	info       BLOB    NOT NULL,           -- JSON：安全、账号、结果、服务器信息
+	info_codec INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS connections_time ON connections(time);
+CREATE TABLE IF NOT EXISTS series (
+	id     INTEGER PRIMARY KEY,
+	target TEXT NOT NULL,
+	node   TEXT NOT NULL,
+	UNIQUE (target, node)
+);
+CREATE TABLE IF NOT EXISTS samples (
+	series_id INTEGER NOT NULL REFERENCES series(id),
+	start_ms  INTEGER NOT NULL,           -- 第一个样本，Unix 毫秒
+	end_ms    INTEGER NOT NULL,           -- 最后一个样本
+	count     INTEGER NOT NULL,
+	codec     INTEGER NOT NULL DEFAULT 0,
+	data      BLOB    NOT NULL            -- 时间间隔与数值，压缩，见 history.go
+);
+CREATE INDEX IF NOT EXISTS samples_series ON samples(series_id, end_ms);
 `
 
+// item is one queued write: a packet, or else a log line, a connection or
+// a block of samples.
 type item struct {
 	session int64
 	p       device.Event
+	line    *Line
+	conn    *Connection
+	block   *block
 }
+
+func (it item) packet() bool { return it.line == nil && it.conn == nil && it.block == nil }
 
 // ErrClosed indicates a synchronous write attempted after recording stopped.
 var ErrClosed = errors.New("报文记录已关闭")
@@ -90,6 +128,8 @@ type Recorder struct {
 	writeErr  error        // only the writer sets this; Close reads it after done
 	Dropped   atomic.Int64 // 缓冲满或写入失败而丢掉的记录数，状态栏会提示
 	running   sync.Map     // 本进程里开始了、还没结束的会话 ID
+	sampleMu  sync.Mutex
+	blocks    map[[2]string]*block // trend samples per target and node, not yet written
 }
 
 // DefaultPath 返回本机数据库位置：macOS 为 ~/Library/Application Support/OPCUAAIStudio/packets.db，
@@ -224,6 +264,7 @@ func migrate(db *sql.DB) error {
 		{"packets", "raw_codec", "INTEGER NOT NULL DEFAULT 0"},
 		{"packets", "operation", "TEXT NOT NULL DEFAULT ''"},
 		{"packets", "metadata", "TEXT NOT NULL DEFAULT ''"},
+		{"packets", "metadata_codec", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if have[c.table] == nil {
 			columns, err := queryColumns(query, c.table)
@@ -266,20 +307,21 @@ func queryColumns(query func(string, ...any) (*sql.Rows, error), table string) (
 	return have, rows.Err()
 }
 
+// A bulk request keeps every target and result, unless more than queuedBusy
+// writes wait: then its first keptPoints, so a slow disk bounds the memory held.
+const (
+	queuedBusy = 50
+	keptPoints = 100
+)
+
 // Record 记录一条收发。不阻塞，可以在收发回调里直接调用。
 func (r *Recorder) Record(session int64, p device.Event) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.closed {
-		r.Dropped.Add(1)
-		return
+	if len(r.ch) > queuedBusy && max(len(p.Targets), len(p.Results)) > keptPoints {
+		p.Total = max(p.Total, len(p.Targets))
+		p.Targets = p.Targets[:min(len(p.Targets), keptPoints)]
+		p.Results = p.Results[:min(len(p.Results), keptPoints)]
 	}
-	p = p.Clone() // the caller may reuse buffers and nested results
-	select {
-	case r.ch <- item{session, p}:
-	default:
-		r.Dropped.Add(1)
-	}
+	r.enqueue(item{session: session, p: p.Clone()}) // the caller may reuse buffers and nested results
 }
 
 func (r *Recorder) loop() {
@@ -306,6 +348,7 @@ func (r *Recorder) loop() {
 		select {
 		case it, ok := <-r.ch:
 			if !ok {
+				batch = append(batch, r.takeBlocks(true)...)
 				flush()
 				return
 			}
@@ -313,6 +356,7 @@ func (r *Recorder) loop() {
 				flush()
 			}
 		case <-tick.C:
+			batch = append(batch, r.takeBlocks(false)...)
 			flush()
 		}
 	}
@@ -329,7 +373,7 @@ func (r *Recorder) insertLocked(batch []item) error {
 		// Rebuild on every retry: rotation requires each session in the new file.
 		seen := make(map[int64]struct{})
 		for _, it := range batch {
-			if _, ok := seen[it.session]; ok {
+			if _, ok := seen[it.session]; ok || !it.packet() {
 				continue
 			}
 			if err := r.ensureSessionLocked(it.session); err != nil {
@@ -357,12 +401,19 @@ func (r *Recorder) insertBatch(batch []item) error {
 	}
 	defer tx.Rollback()
 	st, err := tx.Prepare(`INSERT INTO packets (session_id, time, request_id, direction, protocol, slave, tx_id, function,
-		address, count, raw, status, rtt_us, error, connection_id, raw_codec, operation, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		address, count, raw, status, rtt_us, error, connection_id, raw_codec, operation, metadata, metadata_codec) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+	series := map[[2]string]int64{}
 	for _, it := range batch {
+		if !it.packet() {
+			if err := insertExtra(tx, it, series); err != nil {
+				return err
+			}
+			continue
+		}
 		p := it.p
 		raw, codec, err := encodeData(p.Raw)
 		if err != nil {
@@ -372,12 +423,21 @@ func (r *Recorder) insertBatch(batch []item) error {
 		if err != nil {
 			return err
 		}
+		// A bulk request's targets and results are kept in full, compressed.
+		packed, metaCodec, err := encodeData([]byte(meta))
+		if err != nil {
+			return err
+		}
+		var metaValue any = meta
+		if metaCodec != codecPlain {
+			metaValue = packed
+		}
 		legacy := device.LegacyFields{}
 		if p.Legacy != nil {
 			legacy = *p.Legacy
 		}
 		if _, err := st.Exec(it.session, p.Time.UnixMicro(), p.RequestID, string(p.Dir), string(p.Protocol), legacy.Slave, legacy.TxID,
-			legacy.Function, legacy.Address, legacy.Count, raw, string(p.Status), p.RTT.Microseconds(), p.Error, p.ConnectionID, codec, p.Operation, meta); err != nil {
+			legacy.Function, legacy.Address, legacy.Count, raw, string(p.Status), p.RTT.Microseconds(), p.Error, p.ConnectionID, codec, p.Operation, metaValue, metaCodec); err != nil {
 			return err
 		}
 	}
@@ -622,15 +682,18 @@ func (r *Recorder) Packets(session int64, limit int) ([]device.Event, error) {
 	if columns["raw_codec"] {
 		codecColumn = "raw_codec"
 	}
-	operationColumn, metadataColumn := "''", "''"
+	operationColumn, metadataColumn, metadataCodecColumn := "''", "''", "0"
 	if columns["operation"] {
 		operationColumn = "operation"
 	}
 	if columns["metadata"] {
 		metadataColumn = "metadata"
 	}
+	if columns["metadata_codec"] {
+		metadataCodecColumn = "metadata_codec"
+	}
 	rows, err := r.db.Query(`SELECT time, request_id, direction, protocol, slave, tx_id, function, address, count, raw,
-		status, rtt_us, error, `+connectionColumn+`, `+codecColumn+`, `+operationColumn+`, `+metadataColumn+` FROM packets WHERE session_id = ? ORDER BY id DESC LIMIT ?`, session, limit)
+		status, rtt_us, error, `+connectionColumn+`, `+codecColumn+`, `+operationColumn+`, `+metadataColumn+`, `+metadataCodecColumn+` FROM packets WHERE session_id = ? ORDER BY id DESC LIMIT ?`, session, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -640,21 +703,24 @@ func (r *Recorder) Packets(session int64, limit int) ([]device.Event, error) {
 		var p device.Event
 		var t, rtt int64
 		var legacy device.LegacyFields
-		var codec int
-		var metadata string
+		var codec, metadataCodec int
+		var metadata []byte
 		var e sql.NullString
 		if err := rows.Scan(&t, &p.RequestID, &p.Dir, &p.Protocol, &legacy.Slave, &legacy.TxID, &legacy.Function, &legacy.Address, &legacy.Count, &p.Raw,
-			&p.Status, &rtt, &e, &p.ConnectionID, &codec, &p.Operation, &metadata); err != nil {
+			&p.Status, &rtt, &e, &p.ConnectionID, &codec, &p.Operation, &metadata, &metadataCodec); err != nil {
 			return nil, err
 		}
 		if p.Raw, err = decodeData(p.Raw, codec); err != nil {
+			return nil, fmt.Errorf("读取会话 %d 的报文：%w", session, err)
+		}
+		if metadata, err = decodeData(metadata, metadataCodec); err != nil {
 			return nil, fmt.Errorf("读取会话 %d 的报文：%w", session, err)
 		}
 		p.Time, p.RTT = time.UnixMicro(t), time.Duration(rtt)*time.Microsecond
 		if e.Valid {
 			p.Error = e.String
 		}
-		if err := restorePacketMetadata(&p, metadata, legacy); err != nil {
+		if err := restorePacketMetadata(&p, string(metadata), legacy); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

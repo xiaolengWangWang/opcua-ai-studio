@@ -12,13 +12,11 @@ func TestDesktopDefaultsAndCredentialsAreNotSaved(t *testing.T) {
 	c := service.New(service.Options{RecordDir: t.TempDir()})
 	d := NewDesktop(a, c, "test")
 	defer d.Shutdown()
-	if d.allowWrite.Checked || !d.writeBtn.Disabled() {
+	if !d.singleWriteBtn.Disabled() || !d.writeSelectedBtn.Disabled() {
 		t.Fatal("writes must start disabled")
 	}
 	d.setEndpoint("opc.tcp://127.0.0.1:4840")
 	d.password.SetText("test-password")
-	d.writeValue.SetText("123")
-	d.allowWrite.SetChecked(true)
 	d.saveInputs()
 	if a.Preferences().String("password") != "" || a.Preferences().String("write-value") != "" {
 		t.Fatal("private or write inputs persisted")
@@ -35,8 +33,9 @@ func TestDisconnectedDesktopRejectsWrites(t *testing.T) {
 	c := service.New(service.Options{RecordDir: t.TempDir()})
 	d := NewDesktop(a, c, "test")
 	defer d.Shutdown()
-	d.allowWrite.SetChecked(true)
-	if !d.writeBtn.Disabled() {
-		t.Fatal("write enabled without connection")
+	d.singleNode.SetText("ns=2;s=Counter")
+	d.writeSingle()
+	if !d.singleWriteBtn.Disabled() || !d.lastError.Visible() || d.lastError.Text != "请先连接" {
+		t.Fatal("write offered without connection")
 	}
 }

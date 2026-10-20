@@ -50,8 +50,46 @@ func (d *Desktop) runCheck(fn func(context.Context) error, success func()) {
 
 func (d *Desktop) startFullRead(root string) {
 	d.allRoot.SetText(root)
+	d.rememberRoot(root)
 	d.tabs.SelectIndex(0)
 	d.runCheck(func(ctx context.Context) error { return d.controller.ReadAll(ctx, root) }, nil)
+}
+
+// rememberRoot keeps a parent at the head of the ten used last.
+func (d *Desktop) rememberRoot(root string) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return
+	}
+	list := append([]string{root}, slices.DeleteFunc(d.recentRoots(), func(r string) bool { return r == root })...)
+	d.app.Preferences().SetString("recent-roots", strings.Join(list[:min(len(list), 10)], "\n"))
+	d.rootOptionsKey = ""
+	d.refreshRootOptions()
+}
+
+func (d *Desktop) recentRoots() []string {
+	return strings.FieldsFunc(d.app.Preferences().String("recent-roots"), func(r rune) bool { return r == '\n' })
+}
+
+// refreshRootOptions offers as parents the Objects folder, the connected
+// server's namespaces and the parents used last.
+func (d *Desktop) refreshRootOptions() {
+	options := []string{"i=85"}
+	if s := d.snapshot.Server; s != nil {
+		for i := 1; i < len(s.Namespaces); i++ {
+			options = append(options, fmt.Sprintf("ns=%d", i))
+		}
+	}
+	for _, r := range d.recentRoots() {
+		if !slices.Contains(options, r) {
+			options = append(options, r)
+		}
+	}
+	if key := strings.Join(options, "\n"); key != d.rootOptionsKey {
+		d.rootOptionsKey = key
+		d.allRoot.SetOptions(options)
+		d.browseRoot.SetOptions(options)
+	}
 }
 
 // Filters lists the result filters; 不存在 and 可写 help check imported

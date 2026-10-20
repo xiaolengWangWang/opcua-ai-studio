@@ -154,28 +154,43 @@ func (d *Desktop) serverSearchDialog() {
 	// VPN or proxy adapter floods that software and can stall the computer.
 	nets := opcua.LocalNetworks()
 	scopes, prefixes := scopeOptions(nets)
-	const custom = "指定 IP 或网段"
-	scope := widget.NewSelect(append(scopes, "仅本机 127.0.0.1", custom), func(choice string) {
-		switch choice {
-		case custom:
-			hosts.SetText(prefs.String("scan-custom-hosts"))
-			hosts.Enable()
-			d.win.Canvas().Focus(hosts)
-		case "仅本机 127.0.0.1":
-			hosts.SetText("127.0.0.1")
-			hosts.Disable()
-		default:
-			hosts.SetText(prefixes[choice])
-			hosts.Disable()
+	const custom, loopback = "指定 IP 或网段", "仅本机 127.0.0.1"
+	prefixes[loopback] = "127.0.0.1"
+	// The hosts stay editable: a network fills them, and editing them makes
+	// the range custom, which is kept for the next search.
+	filling := false
+	var scope *widget.Select
+	scope = widget.NewSelect(append(scopes, loopback, custom), func(choice string) {
+		if filling {
+			return
 		}
+		filling = true
+		defer func() { filling = false }()
+		if choice == custom {
+			hosts.SetText(prefs.String("scan-custom-hosts"))
+			d.win.Canvas().Focus(hosts)
+			return
+		}
+		hosts.SetText(prefixes[choice])
 	})
-	if len(scopes) > 0 {
+	hosts.OnChanged = func(text string) {
+		if filling || scope.Selected == custom || text == prefixes[scope.Selected] {
+			return
+		}
+		filling = true
+		scope.SetSelected(custom)
+		filling = false
+	}
+	switch {
+	case prefs.Bool("scan-custom") && prefs.String("scan-custom-hosts") != "":
+		scope.SetSelected(custom)
+	case len(scopes) > 0:
 		scope.SetSelected(scopes[0])
-	} else {
-		scope.SetSelected("仅本机 127.0.0.1")
+	default:
+		scope.SetSelected(loopback)
 	}
 	reset := widget.NewButtonWithIcon("恢复默认端口", theme.HistoryIcon(), func() { ports.SetText(opcua.DefaultPorts) })
-	status := widget.NewLabel("默认搜索本机所在网段；选择“指定 IP 或网段”可只搜索某台主机。")
+	status := widget.NewLabel("默认搜索本机所在网段；可直接修改主机 / 网段，如只填一台主机的 IP。")
 	status.Wrapping = fyne.TextWrapWord
 	bar := widget.NewProgressBar()
 	bar.Hide()
@@ -251,6 +266,7 @@ func (d *Desktop) serverSearchDialog() {
 				if scope.Selected == custom {
 					prefs.SetString("scan-custom-hosts", hosts.Text)
 				}
+				prefs.SetBool("scan-custom", scope.Selected == custom)
 				prefs.SetString("scan-ports", ports.Text)
 				found = nil
 				list.Refresh()
@@ -313,9 +329,10 @@ func (d *Desktop) startServerSearch(hosts []string, ports []int, timeout time.Du
 	bar.SetValue(0)
 	bar.Show()
 	total := len(hosts) * len(ports)
-	// Connections are paced and closed ports wait for the connect timeout,
-	// so the worst case is known in advance.
-	estimate := max(float64(total)/opcua.DialRate, float64(total)/opcua.ScanWorkers*opcua.ConnectTimeout.Seconds())
+	// Connections are paced and a silent address waits for the connect
+	// timeout, once for the first port and once for the others, so the
+	// worst case is known in advance.
+	estimate := max(float64(total)/opcua.DialRate, float64(total)/opcua.ScanWorkers*opcua.ConnectTimeout.Seconds()) + 2*opcua.ConnectTimeout.Seconds()
 	status.SetText(fmt.Sprintf("正在搜索 %d 台主机的 %d 个端口，共 %d 个地址，最长约 %.0f 秒……", len(hosts), len(ports), total, estimate))
 	var last time.Time
 	count := 0

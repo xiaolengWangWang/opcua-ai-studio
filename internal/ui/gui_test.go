@@ -91,19 +91,28 @@ func TestResultsSortByColumnAndHighlightChanges(t *testing.T) {
 	}
 }
 
-func TestBooleanSetValueAndCurrentValue(t *testing.T) {
+func TestWriteFormOffersBooleanAndCurrentValue(t *testing.T) {
 	d := searchDesktop(t)
-	d.selectResult(d.snapshot.Results[2])
-	if d.singleKind.Selected != "Boolean" || d.writeValue.Visible() || !d.writeChoice.Visible() || d.writeChoice.Selected != "false" {
-		t.Fatalf("Boolean control point: kind %s, choice %q", d.singleKind.Selected, d.writeChoice.Selected)
+	f := d.newWriteForm(d.snapshot.Results[2])
+	if f.types.Selected != "Boolean" || f.value.Visible() || !f.choice.Visible() || f.choice.Selected != "false" || f.current.Text != "false" {
+		t.Fatalf("Boolean control point: kind %s, choice %q, current %q", f.types.Selected, f.choice.Selected, f.current.Text)
 	}
-	d.writeChoice.SetSelected("true")
-	if d.writeValue.Text != "true" {
-		t.Fatalf("choice not used as value: %q", d.writeValue.Text)
+	f.choice.SetSelected("true")
+	if f.value.Text != "true" || !f.write.Disabled() {
+		t.Fatalf("choice not used as value, or written without 允许写入: %q", f.value.Text)
 	}
-	d.selectResult(d.snapshot.Results[0])
-	if !d.writeValue.Visible() || d.writeChoice.Visible() || d.writeValue.Text != "true" {
-		t.Fatalf("read-only point replaced the set value: %q", d.writeValue.Text)
+	f.allow.SetChecked(true)
+	if f.write.Disabled() {
+		t.Fatal("允许写入 does not enable the write")
+	}
+	f = d.newWriteForm(d.snapshot.Results[0])
+	if !f.value.Visible() || f.choice.Visible() || f.value.Text != "95.5" || f.types.Selected != "Double" {
+		t.Fatalf("Double point: %q %s", f.value.Text, f.types.Selected)
+	}
+	// A point that was not read takes the type it was declared with.
+	f = d.newWriteForm(device.ReadResult{Address: device.Address{NodeID: "ns=2;s=New", Type: "Int16", Count: 1}})
+	if f.types.Selected != "Int16" || f.current.Text != "未读取" || f.value.Text != "" {
+		t.Fatalf("unread point: %s %q", f.types.Selected, f.current.Text)
 	}
 }
 
@@ -173,10 +182,10 @@ func TestTrendViewKeepsHistoryPerPoint(t *testing.T) {
 		rr[0].Value = device.Value{Type: "Double", Real: 90 + float64(i)}
 		d.refresh(service.Snapshot{Revision: uint64(400 + i), State: "connected", Results: rr})
 	}
-	if h := d.history["ns=2;s=热力站.一次供水温度"]; len(h) != 4 || h[3] != 92 {
+	if h := d.trend["ns=2;s=热力站.一次供水温度"]; len(h) != 4 || h[3].Value != 92 {
 		t.Fatalf("history: %v", h)
 	}
-	if len(d.history["ns=2;s=热力站.一次回水温度"]) != 0 {
+	if len(d.trend["ns=2;s=热力站.一次回水温度"]) != 0 {
 		t.Fatal("BAD point recorded")
 	}
 	// The trend shows the numeric points: the temperature and the counter.
@@ -184,8 +193,29 @@ func TestTrendViewKeepsHistoryPerPoint(t *testing.T) {
 		t.Fatalf("trend rows: %v", d.trendRows)
 	}
 	d.refresh(service.Snapshot{Revision: 410, State: "connected", Results: rr})
-	if len(d.history["ns=2;s=热力站.一次供水温度"]) != 4 {
+	if len(d.trend["ns=2;s=热力站.一次供水温度"]) != 4 {
 		t.Fatal("an unchanged list added a sample")
+	}
+	// A point read at the same time again, as when another point is
+	// verified, adds no sample.
+	at := time.Now()
+	rr = append([]device.ReadResult(nil), rr...)
+	rr[3].Time = at
+	d.refresh(service.Snapshot{Revision: 411, State: "connected", Results: rr})
+	rr = append([]device.ReadResult(nil), rr...)
+	d.refresh(service.Snapshot{Revision: 412, State: "connected", Results: rr})
+	if n := len(d.trend["ns=3;i=1007"]); n != 5 {
+		t.Fatalf("counter samples: %d", n)
+	}
+	// Another range starts over from the record database, read for the
+	// charts as they show.
+	d.trendRange.SetSelected("1 小时")
+	if len(d.trend) != 0 || d.trendLoaded["ns=3;i=1007"] {
+		t.Fatalf("range change kept %d charts", len(d.trend))
+	}
+	d.wantTrend("ns=3;i=1007")
+	if !d.trendLoaded["ns=3;i=1007"] && !d.trendWanted["ns=3;i=1007"] {
+		t.Fatal("a shown chart is not read")
 	}
 }
 

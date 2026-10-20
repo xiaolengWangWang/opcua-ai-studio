@@ -60,7 +60,11 @@ func (d *Desktop) diagnosticsPanel() fyne.CanvasObject {
 	}
 	toolbar := container.NewBorder(nil, nil, container.NewHBox(bold("筛选"), d.packetFilter, bold("搜索")), container.NewHBox(clear, copyJSON, export), d.packetSearch)
 	detail := container.NewBorder(bold("请求详情"), nil, nil, nil, container.NewVScroll(d.packetDetail))
-	logs := container.NewBorder(container.NewBorder(nil, nil, bold("运行日志"), copyLogs), nil, nil, nil, container.NewVScroll(d.logs))
+	// The run log and requests are kept in the record database; the
+	// buttons read earlier ones back, also from previous runs.
+	history := widget.NewButtonWithIcon("历史日志", theme.HistoryIcon(), d.logHistoryDialog)
+	connections := widget.NewButtonWithIcon("连接记录", theme.ListIcon(), d.connectionHistoryDialog)
+	logs := container.NewBorder(container.NewBorder(nil, nil, bold("运行日志"), container.NewHBox(history, connections, copyLogs)), nil, nil, nil, container.NewVScroll(d.logs))
 	bottom := container.NewHSplit(detail, logs)
 	split := container.NewVSplit(d.packetTable, bottom)
 	split.SetOffset(.6)
@@ -147,7 +151,11 @@ func (d *Desktop) packetCell(row, col int) string {
 	if row >= len(d.packets) {
 		return ""
 	}
-	e := d.packets[row]
+	return packetText(d.packets[row], col)
+}
+
+// packetText is one column of a request in the tables of requests.
+func packetText(e device.Event, col int) string {
 	switch col {
 	case 0:
 		return e.Time.Local().Format("15:04:05.000")
@@ -175,7 +183,10 @@ func (d *Desktop) packetStyle(row, col int) widget.Importance {
 	if row >= len(d.packets) {
 		return widget.MediumImportance
 	}
-	e := d.packets[row]
+	return packetImportance(d.packets[row], col)
+}
+
+func packetImportance(e device.Event, col int) widget.Importance {
 	switch {
 	case col == 4 && e.Status == device.StatusSuccess:
 		return widget.SuccessImportance
@@ -205,7 +216,9 @@ func packetDetail(e device.Event) string {
 		head = fmt.Sprintf("目标（%d 个，记录前 %d 个）：", n, len(e.Targets))
 	}
 	lines = append(lines, head)
-	for i, a := range e.Targets {
+	// The database keeps every target; a label of thousands of lines is slow.
+	const shown = 500
+	for i, a := range e.Targets[:min(len(e.Targets), shown)] {
 		line := "  " + a.NodeID
 		if i < len(e.Results) {
 			switch r := e.Results[i]; {
@@ -225,6 +238,9 @@ func packetDetail(e device.Event) string {
 			}
 		}
 		lines = append(lines, line)
+	}
+	if len(e.Targets) > shown {
+		lines = append(lines, fmt.Sprintf("  …… 另有 %d 个，可复制 JSON 查看全部", len(e.Targets)-shown))
 	}
 	return strings.Join(lines, "\n")
 }
