@@ -67,7 +67,7 @@ func Run(ctx context.Context, args []string, out, errout io.Writer) (code int) {
 			return encode(out, errout, ee)
 		}
 		for _, e := range ee {
-			fmt.Fprintf(out, "%s  %s / %s  %v\n", e.URL, e.Policy, e.Mode, e.Authentication)
+			fmt.Fprintf(out, "%s  %s / %s  %v  endpoint-host=%s\n", e.URL, e.Policy, e.Mode, e.Authentication, e.EndpointHost)
 		}
 		return 0
 	}

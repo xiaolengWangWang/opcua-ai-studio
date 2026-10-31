@@ -1,8 +1,8 @@
 # OPC UA AI Studio
 
-参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.7.0`。
+参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.7.1`。
 
-Windows 发行包见 [Gitee Release v0.7.0](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.7.0) 或 [GitHub Release v0.7.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.7.0)，更新说明见 [版本说明](docs/releases/v0.7.0.md)。发布页提供三种下载：桌面程序单文件 `OPCUAAIStudio-<版本>-Windows-x64.exe`、命令行工具包 `opcua-tools-<版本>-Windows-x64.zip`（opcua-cli 与 opcua-sim），以及包含全部文件的 `OPCUAAIStudio-<版本>-Windows-x64.zip`（程序内更新使用）。
+Windows 发行包见 [Gitee Release v0.7.1](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.7.1) 或 [GitHub Release v0.7.1](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.7.1)，更新说明见 [版本说明](docs/releases/v0.7.1.md)。发布页提供三种下载：桌面程序单文件 `OPCUAAIStudio-<版本>-Windows-x64.exe`、命令行工具包 `opcua-tools-<版本>-Windows-x64.zip`（opcua-cli 与 opcua-sim），以及包含全部文件的 `OPCUAAIStudio-<版本>-Windows-x64.zip`（程序内更新使用）。
 
 ## Windows 桌面
 
@@ -74,6 +74,8 @@ go build -o bin/opcua-sim.exe ./cmd/opcua-sim
 ```
 
 所有参数放在操作名前。多个 NodeID 使用独立参数，不按逗号拆分。用户名由 `-username` 提供，密码读取 `OPCUA_PASSWORD` 环境变量。安全参数为 `-security-policy`、`-security-mode`、`-cert`、`-key`、`-server-cert`；`-help` 列出全部参数。
+
+`endpoints` 的输出包含服务器返回的 `endpoint-host=admin-PC` 等参数，JSON 中对应 `endpoint_host` 字段。桌面程序可在“连接设置 › 发现端点”中查看并单独复制，连接后“服务器信息”中也会显示。该值取自服务器返回的端点 URL，可能与连接地址中的 IP 不同。
 
 退出码：0 全部成功，1 通讯/单项/记录/读回失败，2 参数错误或写入未获允许。JSON 中整数使用十进制字符串保留完整的 64 位精度。
 

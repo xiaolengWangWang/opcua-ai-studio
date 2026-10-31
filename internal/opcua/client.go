@@ -66,6 +66,7 @@ func (o Options) Validate() error {
 
 type Endpoint struct {
 	URL            string   `json:"url"`
+	EndpointHost   string   `json:"endpoint_host,omitempty"` // host advertised by the server
 	Policy         string   `json:"policy"`
 	Mode           string   `json:"mode"`
 	Authentication []string `json:"authentication"`
@@ -86,7 +87,7 @@ func Endpoints(ctx context.Context, target string, timeout time.Duration) ([]End
 	}
 	out := make([]Endpoint, 0, len(ee))
 	for _, e := range ee {
-		v := Endpoint{URL: e.EndpointURL, Policy: strings.TrimPrefix(e.SecurityPolicyURI, ua.SecurityPolicyURIPrefix), Mode: modeName(e.SecurityMode)}
+		v := Endpoint{URL: e.EndpointURL, EndpointHost: hostOf(e.EndpointURL), Policy: strings.TrimPrefix(e.SecurityPolicyURI, ua.SecurityPolicyURIPrefix), Mode: modeName(e.SecurityMode)}
 		for _, a := range e.UserIdentityTokens {
 			v.Authentication = append(v.Authentication, a.TokenType.String())
 		}
@@ -107,12 +108,13 @@ func modeName(m ua.MessageSecurityMode) string {
 }
 
 type Client struct {
-	client     *sdk.Client
-	options    Options
-	closed     atomic.Bool
-	seq        atomic.Uint64
-	connection string
-	target     string
+	client       *sdk.Client
+	options      Options
+	closed       atomic.Bool
+	seq          atomic.Uint64
+	connection   string
+	target       string
+	endpointHost string // from the selected server endpoint, independent of target
 }
 
 func Dial(ctx context.Context, target string, o Options) (*Client, error) {
@@ -185,7 +187,7 @@ func Dial(ctx context.Context, target string, o Options) (*Client, error) {
 		c.Close(closeCtx)
 		return nil, err
 	}
-	return &Client{client: c, options: o, connection: strconv.FormatInt(time.Now().UnixNano(), 36), target: target}, nil
+	return &Client{client: c, options: o, connection: strconv.FormatInt(time.Now().UnixNano(), 36), target: target, endpointHost: hostOf(chosen.EndpointURL)}, nil
 }
 func (c *Client) Close() error {
 	if c.closed.Swap(true) {

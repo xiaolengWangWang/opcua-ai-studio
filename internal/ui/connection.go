@@ -103,7 +103,7 @@ func (d *Desktop) deleteProfile() {
 
 // endpointText describes an endpoint in one line of a pick list.
 func endpointText(e opcua.Endpoint) string {
-	return fmt.Sprintf("%s / %s · 认证 %s · %s", e.Policy, e.Mode, strings.Join(e.Authentication, "、"), e.URL)
+	return fmt.Sprintf("%s / %s · 认证 %s · endpoint-host=%s · %s", e.Policy, e.Mode, strings.Join(e.Authentication, "、"), or(e.EndpointHost, "—"), e.URL)
 }
 
 // useEndpoint fills the security inputs from a chosen endpoint and opens the
@@ -116,19 +116,38 @@ func (d *Desktop) useEndpoint(e opcua.Endpoint) {
 	}
 }
 
+// endpointList lets each advertised endpoint host be copied independently.
+func (d *Desktop) endpointList(ee []opcua.Endpoint) *widget.List {
+	return widget.NewList(func() int { return len(ee) }, func() fyne.CanvasObject {
+		label := widget.NewLabel("")
+		label.Truncation = fyne.TextTruncateEllipsis
+		copy := widget.NewButtonWithIcon("复制 endpoint-host", theme.ContentCopyIcon(), nil)
+		return container.NewBorder(nil, nil, nil, copy, label)
+	}, func(i widget.ListItemID, o fyne.CanvasObject) {
+		e := ee[i]
+		row := o.(*fyne.Container)
+		row.Objects[0].(*widget.Label).SetText(endpointText(e))
+		copy := row.Objects[1].(*widget.Button)
+		copy.OnTapped = func() { d.win.Clipboard().SetContent("endpoint-host=" + e.EndpointHost) }
+		if e.EndpointHost == "" {
+			copy.Disable()
+		} else {
+			copy.Enable()
+		}
+	})
+}
+
 // endpointsDialog lists the server's endpoints; choosing one fills the
 // security policy and mode. The typed Endpoint is kept: servers often report
 // a host name this computer cannot resolve.
 func (d *Desktop) endpointsDialog(ee []opcua.Endpoint) {
 	var box dialog.Dialog
-	list := widget.NewList(func() int { return len(ee) }, func() fyne.CanvasObject { return widget.NewLabel("") }, func(i widget.ListItemID, o fyne.CanvasObject) {
-		o.(*widget.Label).SetText(endpointText(ee[i]))
-	})
+	list := d.endpointList(ee)
 	list.OnSelected = func(i widget.ListItemID) {
 		d.useEndpoint(ee[i])
 		box.Hide()
 	}
-	hint := widget.NewLabel("点选一个端点，填入其安全策略和模式；Endpoint 保持当前输入。加密端点还须在“安全与认证”中填写证书。")
+	hint := widget.NewLabel("点选一个端点，填入其安全策略和模式；Endpoint 保持当前输入。endpoint-host 来自服务器返回的端点 URL，可点击右侧按钮复制。加密端点还须填写证书。")
 	hint.Wrapping = fyne.TextWrapWord
 	box = dialog.NewCustom(fmt.Sprintf("服务器端点（%d 个）", len(ee)), "关闭", container.NewBorder(hint, nil, nil, nil, list), d.win)
 	box.Resize(fyne.NewSize(820, 420))
@@ -423,6 +442,7 @@ func serverInfoText(info opcua.ServerInfo) string {
 	}
 	lines := []string{
 		"Endpoint：" + info.Endpoint,
+		"endpoint-host=" + or(info.EndpointHost, "—"),
 		fmt.Sprintf("安全：%s / %s", info.Policy, info.Mode),
 		"产品：" + or(info.Product, "—"),
 		"厂商：" + or(info.Manufacturer, "—"),

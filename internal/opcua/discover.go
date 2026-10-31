@@ -523,7 +523,7 @@ func describe(ctx context.Context, target string, timeout time.Duration, from ne
 				f.Name = e.Server.ApplicationName.Text
 			}
 		}
-		v := Endpoint{URL: e.EndpointURL, Policy: strings.TrimPrefix(e.SecurityPolicyURI, ua.SecurityPolicyURIPrefix), Mode: modeName(e.SecurityMode)}
+		v := Endpoint{URL: e.EndpointURL, EndpointHost: hostOf(e.EndpointURL), Policy: strings.TrimPrefix(e.SecurityPolicyURI, ua.SecurityPolicyURIPrefix), Mode: modeName(e.SecurityMode)}
 		for _, a := range e.UserIdentityTokens {
 			v.Authentication = append(v.Authentication, a.TokenType.String())
 		}

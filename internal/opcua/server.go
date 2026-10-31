@@ -13,6 +13,7 @@ import (
 // ServerInfo describes the connected server from its standard Server object.
 type ServerInfo struct {
 	Endpoint, Policy, Mode                                       string
+	EndpointHost                                                 string // host advertised by the selected endpoint
 	Product, ProductURI, Manufacturer, Version, Build            string
 	State                                                        string
 	BuildDate, StartTime, CurrentTime                            time.Time
@@ -38,7 +39,7 @@ func (c *Client) Ping(ctx context.Context) error {
 // ServerInfo reads the server status, build information, namespaces and, when
 // the server keeps them, session diagnostics with the connected clients.
 func (c *Client) ServerInfo(ctx context.Context) (ServerInfo, error) {
-	info := ServerInfo{Endpoint: c.target, Policy: c.options.Policy, Mode: c.options.Mode, Sessions: -1, CumulatedSessions: -1, RejectedSessions: -1, Subscriptions: -1}
+	info := ServerInfo{Endpoint: c.target, EndpointHost: c.endpointHost, Policy: c.options.Policy, Mode: c.options.Mode, Sessions: -1, CumulatedSessions: -1, RejectedSessions: -1, Subscriptions: -1}
 	nodes := []uint32{id.Server_ServerStatus, id.Server_NamespaceArray, id.Server_ServerDiagnostics_ServerDiagnosticsSummary, id.Server_ServerDiagnostics_SessionsDiagnosticsSummary_SessionDiagnosticsArray}
 	req := &ua.ReadRequest{}
 	for _, n := range nodes {
