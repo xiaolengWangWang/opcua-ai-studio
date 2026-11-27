@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OPC UA AI Studio · 工作台</title>
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">O<span>·</span></div>
+          <div><strong>OPC UA</strong><small>AI STUDIO</small></div>
+        </div>
+        <div class="side-label">工作空间</div>
+        <a class="nav-item active" href="#workspace"
+          ><span class="nav-icon">◫</span> 设备工作台
+          <span class="nav-arrow">↗</span></a
+        >
+        <a class="nav-item" href="#connection"
+          ><span class="nav-icon">⌁</span> 连接设置</a
+        >
+        <a class="nav-item" href="#activity"
+          ><span class="nav-icon">≡</span> 运行日志</a
+        >
+        <div class="sidebar-bottom">
+          <span class="side-dot"></span>
+          <div>
+            <strong>本地工作空间</strong><small>连接 · 浏览 · 读取</small>
+          </div>
+        </div>
+      </aside>
+      <main id="workspace">
+        <header class="topbar">
+          <div class="breadcrumb">工作空间 <span>/</span> 设备工作台</div>
+          <div class="top-status">
+            <span class="status-dot" id="top-dot"></span
+            ><span id="top-status">正在获取状态</span>
+          </div>
+        </header>
+        <div class="content">
+          <div class="page-heading">
+            <div>
+              <h1>设备工作台</h1>
+              <p>连接 OPC UA 服务，浏览节点并查看实时数据。</p>
+            </div>
+          </div>
+          <div
+            id="notice"
+            class="notice"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></div>
+          <section
+            class="connection card"
+            id="connection"
+            aria-labelledby="connection-title"
+          >
+            <div class="section-head">
+              <div class="section-title">
+                <span class="section-icon">⌁</span>
+                <div>
+                  <h2 id="connection-title">连接服务器</h2>
+                  <p>配置目标地址，或启动本地演示服务。</p>
+                </div>
+              </div>
+              <span class="pill" id="connection-state">未连接</span>
+            </div>
+            <div class="connection-main">
+              <label class="field endpoint-field"
+                ><span>服务器地址</span
+                ><input
+                  id="target"
+                  type="text"
+                  value="opc.tcp://127.0.0.1:4840"
+                  spellcheck="false"
+                  autocomplete="off"
+              /></label>
+              <div class="connection-actions">
+                <button id="discover" class="button secondary">发现端点</button
+                ><button id="connect" class="button primary">
+                  连接服务器 <span>↗</span></button
+                ><button id="disconnect" class="button secondary">断开</button>
+              </div>
+            </div>
+            <details class="advanced">
+              <summary>高级连接设置 <span>＋</span></summary>
+              <div class="advanced-grid">
+                <label class="field"
+                  ><span>用户名</span
+                  ><input
+                    id="username"
+                    autocomplete="username"
+                    placeholder="匿名访问" /></label
+                ><label class="field"
+                  ><span>密码</span
+                  ><input
+                    id="password"
+                    type="password"
+                    autocomplete="current-password" /></label
+                ><label class="field"
+                  ><span>安全策略</span
+                  ><select id="policy">
+                    <option>None</option>
+                    <option>Basic256Sha256</option>
+                    <option>Aes128_Sha256_RsaOaep</option>
+                    <option>Aes256_Sha256_RsaPss</option>
+                  </select></label
+                ><label class="field"
+                  ><span>消息安全模式</span
+                  ><select id="mode">
+                    <option>None</option>
+                    <option>Sign</option>
+                    <option>SignAndEncrypt</option>
+                  </select></label
+                ><label class="field"
+                  ><span>客户端证书 PEM</span
+                  ><textarea
+                    id="certificate"
+                    rows="3"
+                    placeholder="粘贴 PEM 内容"
+                  ></textarea></label
+                ><label class="field"
+                  ><span>客户端私钥 PEM</span
+                  ><textarea
+                    id="private-key"
+                    rows="3"
+                    placeholder="粘贴 PEM 内容"
+                  ></textarea></label
+                ><label class="field"
+                  ><span>服务器证书 PEM</span
+                  ><textarea
+                    id="server-certificate"
+                    rows="3"
+                    placeholder="粘贴 PEM 内容"
+                  ></textarea></label
+                ><label class="check-field"
+                  ><input id="auto-reconnect" type="checkbox" /> 自动重连</label
+                >
+              </div>
+            </details>
+            <div id="endpoint-results" class="endpoint-results" hidden></div>
+            <div class="demo-strip">
+              <div>
+                <span class="demo-icon">✳</span
+                ><span
+                  ><strong>初次使用？</strong>
+                  启动本地演示服务，快速体验数据读取。</span
+                >
+              </div>
+              <div class="demo-actions">
+                <span id="demo-target"></span
+                ><button id="demo-start" class="text-button">
+                  启动演示 <span>→</span></button
+                ><button id="demo-stop" class="text-button" hidden>
+                  停止演示
+                </button>
+              </div>
+            </div>
+          </section>
+          <div class="metrics" aria-label="工作台概览">
+            <div class="metric">
+              <span class="metric-label">连接状态</span
+              ><strong id="metric-state">—</strong
+              ><small id="metric-target">等待连接</small>
+            </div>
+            <div class="metric">
+              <span class="metric-label">读取点位</span
+              ><strong id="metric-count">0 <small>个</small></strong
+              ><small>当前结果中的点位</small>
+            </div>
+            <div class="metric">
+              <span class="metric-label">数据质量</span
+              ><strong id="metric-good">—</strong><small>GOOD / 已读取</small>
+            </div>
+            <div class="metric">
+              <span class="metric-label">自动刷新</span
+              ><strong id="metric-polling">未开启</strong
+              ><small id="record-status">记录状态待确认</small>
+            </div>
+          </div>
+          <div class="workspace-grid">
+            <section class="card work-card" aria-labelledby="data-title">
+              <div class="work-head">
+                <div><h2 id="data-title">数据浏览</h2></div>
+              </div>
+              <div class="tabs" role="tablist" aria-label="数据视图">
+                <button
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="panel-results"
+                  id="tab-results"
+                  data-tab="results"
+                >
+                  读取结果 <span id="result-badge">0</span></button
+                ><button
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="panel-browser"
+                  id="tab-browser"
+                  data-tab="browser"
+                >
+                  节点浏览</button
+                ><button
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="panel-logs"
+                  id="tab-logs"
+                  data-tab="logs"
+                >
+                  运行日志
+                </button>
+              </div>
+              <div
+                class="panel"
+                id="panel-results"
+                role="tabpanel"
+                aria-labelledby="tab-results"
+              >
+                <div class="toolbar">
+                  <div>
+                    <h3>点位数据</h3>
+                    <p id="scan-status">读取或扫描后，结果将显示在这里。</p>
+                  </div>
+                  <div class="toolbar-actions">
+                    <label class="sr-only" for="filter">筛选点位</label
+                    ><input
+                      id="filter"
+                      class="search"
+                      placeholder="⌕  搜索点位或值"
+                    /><button id="read-all" class="button secondary compact">
+                      扫描并读取
+                    </button>
+                  </div>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>节点 / NODE ID</th>
+                        <th>当前值</th>
+                        <th>类型</th>
+                        <th>质量</th>
+                        <th>更新时间</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="results-body"></tbody>
+                  </table>
+                  <div class="empty" id="results-empty">
+                    <div class="empty-symbol">⌁</div>
+                    <strong>还没有读取数据</strong>
+                    <p>选择节点或在右侧输入 NodeID，开始读取。</p>
+                  </div>
+                </div>
+                <div class="pagination">
+                  <span id="result-range">0 个点位</span>
+                  <div>
+                    <button
+                      id="prev-page"
+                      class="page-button"
+                      aria-label="上一页"
+                    >
+                      ←</button
+                    ><span id="page-label">1 / 1</span
+                    ><button
+                      id="next-page"
+                      class="page-button"
+                      aria-label="下一页"
+                    >
+                      →
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div
+                class="panel"
+                id="panel-browser"
+                role="tabpanel"
+                aria-labelledby="tab-browser"
+                hidden
+              >
+                <div class="browser-bar">
+                  <label class="field grow"
+                    ><span>浏览起点</span
+                    ><input
+                      id="browse-node"
+                      value="i=85"
+                      spellcheck="false" /></label
+                  ><button id="browse" class="button primary compact">
+                    浏览节点
+                  </button>
+                </div>
+                <p class="subtle" id="browse-status">
+                  从 Objects 节点开始浏览。选择节点可加入读取列表。
+                </p>
+                <div id="nodes-list" class="nodes-list"></div>
+                <div id="nodes-empty" class="empty small-empty">
+                  <div class="empty-symbol">⌘</div>
+                  <strong>开始浏览节点</strong>
+                  <p>输入起点 NodeID，查看其下一级节点。</p>
+                </div>
+                <div class="pagination">
+                  <span id="node-range">0 个节点</span>
+                  <div>
+                    <button
+                      id="node-prev"
+                      class="page-button"
+                      aria-label="节点上一页"
+                    >
+                      ←</button
+                    ><span id="node-page">1 / 1</span
+                    ><button
+                      id="node-next"
+                      class="page-button"
+                      aria-label="节点下一页"
+                    >
+                      →
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div
+                class="panel"
+                id="panel-logs"
+                role="tabpanel"
+                aria-labelledby="tab-logs"
+                hidden
+              >
+                <div class="toolbar" id="activity">
+                  <div>
+                    <h3>运行日志</h3>
+                    <p>查看连接、读取和记录过程。</p>
+                  </div>
+                </div>
+                <div id="logs" class="logs"></div>
+                <div id="logs-empty" class="empty small-empty">
+                  <strong>暂无运行日志</strong>
+                  <p>操作记录将显示在这里。</p>
+                </div>
+                <p class="record-path" id="record-path"></p>
+              </div>
+            </section>
+            <aside class="operations">
+              <section class="card action-card">
+                <div class="action-heading">
+                  <span class="action-icon">↙</span>
+                  <div><h2>读取点位</h2></div>
+                </div>
+                <label class="field"
+                  ><span>节点地址 <em>NODE ID</em></span
+                  ><textarea
+                    id="read-nodes"
+                    rows="5"
+                    spellcheck="false"
+                    placeholder="ns=2;s=Temperature&#10;ns=2;s=Pressure"
+                  ></textarea
+                  ><small
+                    >每行一个 NodeID，保留地址中的空格和逗号。</small
+                  ></label
+                ><button id="read" class="button primary full">
+                  读取数据 <span>→</span>
+                </button>
+                <div class="divider"></div>
+                <div class="refresh-row">
+                  <div>
+                    <strong>自动刷新</strong><small>周期性更新已读点位</small>
+                  </div>
+                  <span id="poll-indicator" class="mini-status">已关闭</span>
+                </div>
+                <div class="refresh-controls">
+                  <label class="sr-only" for="interval">刷新间隔，毫秒</label
+                  ><input
+                    id="interval"
+                    type="number"
+                    value="2000"
+                    min="100"
+                    max="86400000"
+                    step="100"
+                    aria-label="刷新间隔，毫秒"
+                  /><span>ms</span
+                  ><button id="refresh-start" class="button secondary compact">
+                    开启</button
+                  ><button id="refresh-stop" class="button secondary compact">
+                    停止
+                  </button>
+                </div>
+              </section>
+              <section class="card action-card write-card">
+                <div class="action-heading">
+                  <span class="action-icon amber">↗</span>
+                  <div><h2>写入点位</h2></div>
+                </div>
+                <label class="field"
+                  ><span>目标 NodeID</span
+                  ><input
+                    id="write-node"
+                    spellcheck="false"
+                    placeholder="ns=2;s=Setpoint"
+                /></label>
+                <div class="two-fields">
+                  <label class="field"
+                    ><span>数据类型</span
+                    ><select id="write-type">
+                      <option>Boolean</option>
+                      <option>SByte</option>
+                      <option>Byte</option>
+                      <option>Int16</option>
+                      <option>UInt16</option>
+                      <option>Int32</option>
+                      <option>UInt32</option>
+                      <option>Int64</option>
+                      <option>UInt64</option>
+                      <option>Float</option>
+                      <option>Double</option>
+                      <option>String</option>
+                      <option>DateTime</option>
+                      <option>ByteString</option>
+                    </select></label
+                  ><label class="field"
+                    ><span>数量</span
+                    ><input
+                      id="write-count"
+                      type="number"
+                      value="1"
+                      min="1"
+                      max="65535"
+                  /></label>
+                </div>
+                <label class="field"
+                  ><span>写入值</span
+                  ><input id="write-value" placeholder="输入写入值" /><small
+                    id="write-hint"
+                  ></small></label
+                ><button id="write" class="button write-button full">
+                  检查并写入 <span>↗</span>
+                </button>
+                <p
+                  class="write-result"
+                  id="write-result"
+                  aria-live="polite"
+                ></p>
+              </section>
+            </aside>
+          </div>
+          <footer><span>OPC UA AI STUDIO</span></footer>
+        </div>
+      </main>
+    </div>
+    <dialog id="write-dialog">
+      <div>
+        <div class="dialog-icon">!</div>
+        <h2>确认写入设备？</h2>
+        <p>此操作会向当前连接的服务器写入数据。请核对以下内容。</p>
+        <dl id="write-summary"></dl>
+        <p class="dialog-warning">请确认目标设备允许此操作。</p>
+        <div class="dialog-actions">
+          <button id="write-cancel" type="button" class="button secondary">
+            取消</button
+          ><button id="write-confirm" type="button" class="button write-button">
+            确认写入
+          </button>
+        </div>
+      </div>
+    </dialog>
+  </body>
+</html>

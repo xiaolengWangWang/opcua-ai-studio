@@ -18,3 +18,28 @@ jobs:
       - run: go test -tags ci -count=1 -timeout 10m ./...
       - name: Build CLI and simulator
         run: go build ./cmd/opcua-cli ./cmd/opcua-sim
+      - name: Verify standalone Linux Web packages
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          CGO_ENABLED=0 go test -count=1 ./internal/web ./internal/opcua
+          bash build/linux.sh
+          package=(dist/linux/*-linux-amd64.tar.gz)
+          smoke=$(mktemp -d)
+          tar -xzf "${package[0]}" -C "$smoke"
+          app=("$smoke"/*/opcua-ai-studio)
+          "${app[0]}" -no-browser -port 0 -record-dir "$smoke/records" > "$smoke/startup.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for attempt in {1..50}; do
+            url=$(sed -n 's/.*\(http:\/\/127\.0\.0\.1:[0-9]*\/\).*/\1/p' "$smoke/startup.log")
+            [[ -z $url ]] || break
+            sleep 0.1
+          done
+          test -n "$url" || { cat "$smoke/startup.log"; exit 1; }
+          curl -fsS "$url" > "$smoke/index.html"
+          grep -q 'OPC UA AI Studio' "$smoke/index.html"
+          curl -fsS -H 'Content-Type: application/json' -d '{}' "${url}api/demo/start" > "$smoke/demo.json"
+          grep -q '"integer":"42"' "$smoke/demo.json"
+          kill -TERM "$pid"
+          wait "$pid"

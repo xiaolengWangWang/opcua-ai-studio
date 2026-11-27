@@ -164,30 +164,52 @@ func certificate(t *testing.T, name string) ([]byte, *rsa.PrivateKey, string, st
 
 func TestEncryptedConnectionAndCertificateMismatch(t *testing.T) {
 	der, key, serverCert, _ := certificate(t, "server")
-	_, _, clientCert, clientKey := certificate(t, "client")
+	clientDER, clientRSA, clientCert, clientKey := certificate(t, "client")
 	_, ns, target := testServer(t, nil, server.EnableSecurity("Basic256Sha256", ua.MessageSecurityModeSignAndEncrypt), server.PrivateKey(key), server.Certificate(der))
 	n := ns.AddNode(server.NewVariableNode(ua.NewStringNodeID(ns.ID(), "Counter"), "Counter", int32(42)))
 	o := DefaultOptions()
 	o.Policy = "Basic256Sha256"
 	o.Mode = "SignAndEncrypt"
-	o.Certificate = clientCert
-	o.PrivateKey = clientKey
-	o.ServerCertificate = serverCert
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	c, err := Dial(ctx, target, o)
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(clientRSA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, _ := device.ParseAddress(n.ID().String(), "Auto", 1)
-	rr, err := c.Read(ctx, []device.Address{a})
-	c.Close()
-	if err != nil || rr[0].Value.Integer != "42" {
-		t.Fatalf("%+v %v", rr, err)
-	}
-	o.ServerCertificate = clientCert
-	if c, err = Dial(ctx, target, o); err == nil {
-		c.Close()
-		t.Fatal("untrusted server accepted")
+	clientPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: clientDER}))
+	serverPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	for _, name := range []string{"files", "PEM PKCS1", "PEM PKCS8"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := o
+			switch name {
+			case "files":
+				cfg.Certificate, cfg.PrivateKey, cfg.ServerCertificate = clientCert, clientKey, serverCert
+			case "PEM PKCS1":
+				cfg.CertificatePEM, cfg.ServerCertificatePEM = clientPEM, serverPEM
+				cfg.PrivateKeyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(clientRSA)}))
+			case "PEM PKCS8":
+				cfg.CertificatePEM, cfg.ServerCertificatePEM = clientPEM, serverPEM
+				cfg.PrivateKeyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8}))
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			c, err := Dial(ctx, target, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, _ := device.ParseAddress(n.ID().String(), "Auto", 1)
+			rr, err := c.Read(ctx, []device.Address{a})
+			c.Close()
+			if err != nil || len(rr) != 1 || rr[0].Value.Integer != "42" {
+				t.Fatalf("%+v %v", rr, err)
+			}
+			if name == "files" {
+				cfg.ServerCertificate = clientCert
+			} else {
+				cfg.ServerCertificatePEM = clientPEM
+			}
+			if c, err = Dial(ctx, target, cfg); err == nil {
+				c.Close()
+				t.Fatal("untrusted server accepted")
+			}
+		})
 	}
 }

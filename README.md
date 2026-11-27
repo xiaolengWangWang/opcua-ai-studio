@@ -1,8 +1,36 @@
 # OPC UA AI Studio
 
-参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 桌面调试工具，使用 Go + Fyne。当前版本为 `0.7.1`。
+参考 [S7 AI Studio](https://gitee.com/sun_xuanqi/s7_ai_studio) 创建的独立 OPC UA 调试工具，提供 Windows 桌面版和 Linux Web 版。当前版本为 `0.8.0`。
 
-Windows 发行包见 [Gitee Release v0.7.1](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.7.1) 或 [GitHub Release v0.7.1](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.7.1)，更新说明见 [版本说明](docs/releases/v0.7.1.md)。发布页提供三种下载：桌面程序单文件 `OPCUAAIStudio-<版本>-Windows-x64.exe`、命令行工具包 `opcua-tools-<版本>-Windows-x64.zip`（opcua-cli 与 opcua-sim），以及包含全部文件的 `OPCUAAIStudio-<版本>-Windows-x64.zip`（程序内更新使用）。
+Windows 发行包包括桌面程序单文件 `OPCUAAIStudio-<版本>-Windows-x64.exe`、命令行工具包 `opcua-tools-<版本>-Windows-x64.zip`（opcua-cli 与 opcua-sim），以及包含全部文件的 `OPCUAAIStudio-<版本>-Windows-x64.zip`（程序内更新使用）。Linux Web 包按 CPU 架构下载。[Gitee Release v0.8.0](https://gitee.com/xiaolengwangwang/opcua_ai_studio/releases/tag/v0.8.0) · [GitHub Release v0.8.0](https://github.com/xiaolengWangWang/opcua-ai-studio/releases/tag/v0.8.0) · [版本说明](docs/releases/v0.8.0.md)
+
+## Linux Web（含银河麒麟）
+
+Linux 版将网页、OPC UA 服务和 SQLite 打包进单个可执行文件。目标机无需安装 Go、Node.js、Docker 或数据库服务。有桌面时程序会尝试打开系统默认浏览器，终端始终会显示访问地址。
+
+运行 `uname -m`，按结果选择对应的 `OPCUAAIStudio-<版本>-linux-<架构>.tar.gz`。
+
+| `uname -m` | 下载包架构 | 常见平台 |
+| --- | --- | --- |
+| `x86_64` | `amd64` | Intel、AMD、海光、兆芯 |
+| `aarch64` | `arm64` | 飞腾、鲲鹏等 ARM64 平台 |
+| `loongarch64` | `loong64` | 龙芯 LoongArch64，要求 Linux 内核 5.19 或更新 |
+
+银河麒麟各版本支持的架构和内核取决于所选发行版。龙芯包的内核要求来自 Go 工具链。[银河麒麟 V10 产品白皮书](https://kylinos.cn/upload/product/20240708/e6c3ae870f13e3eab25d82399d8b9007.pdf) · [Go 对 Linux 的内核要求](https://go.dev/wiki/Linux)
+
+以下命令使用 `amd64` 包。
+
+```bash
+tar -xzf OPCUAAIStudio-0.8.0-linux-amd64.tar.gz
+cd OPCUAAIStudio-0.8.0-linux-amd64
+./opcua-ai-studio
+```
+
+浏览器访问 `http://127.0.0.1:8787/`。首次使用可点击“启动演示”，读取 `ns=2;s=Counter`（初始值为 42）。网页支持端点发现、匿名或用户名认证、安全连接、节点浏览、批量读取、全量读取、自动刷新、写入确认与读回、运行日志。安全连接可在网页中输入 PEM 格式的客户端证书、未加密 RSA 私钥和可信服务器证书。
+
+服务只监听 `127.0.0.1`。无桌面时可以用 `./opcua-ai-studio -no-browser` 启动，并从自己的电脑用 `ssh -N -L 8787:127.0.0.1:8787 用户名@服务器` 转发，在本机浏览器访问相同地址。`-port` 可修改端口（`0` 自动分配），SSH 转发时请让两端端口一致。按 `Ctrl+C` 结束服务。记录默认写入 `$XDG_CONFIG_HOME/OPCUAAIStudio/records`，未设置时为 `~/.config/OPCUAAIStudio/records`，可用 `-record-dir` 修改。
+
+从源码打包时，在 Linux 或 Windows 的 Git Bash 中运行 `bash build/linux.sh`。输出位于 `dist/linux/`，每个归档附带 SHA-256 校验文件。也可以指定版本和架构，例如 `bash build/linux.sh 0.8.0 arm64`。打包需要 Go 和 GNU tar。
 
 ## Windows 桌面
 

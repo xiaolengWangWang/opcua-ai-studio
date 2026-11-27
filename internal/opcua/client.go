@@ -4,6 +4,8 @@ package opcua
 import (
 	"bytes"
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -23,7 +25,9 @@ import (
 type Options struct {
 	Timeout                                                                      time.Duration
 	Policy, Mode, Username, Password, Certificate, PrivateKey, ServerCertificate string
-	Observer                                                                     device.Observer
+	// PEM credentials let callers supply text without granting access to local paths.
+	CertificatePEM, PrivateKeyPEM, ServerCertificatePEM string
+	Observer                                            device.Observer
 }
 
 // MaxNodesPerRequest bounds one request; servers that accept less reject the
@@ -55,7 +59,9 @@ func (o Options) Validate() error {
 	if (o.Policy == "None") != (o.Mode == "None") {
 		return fmt.Errorf("None 策略须配合 None 模式；加密策略须配合 Sign 或 SignAndEncrypt")
 	}
-	if o.Policy != "None" && (o.Certificate == "" || o.PrivateKey == "" || o.ServerCertificate == "") {
+	if o.Policy != "None" && ((o.Certificate == "" && o.CertificatePEM == "") ||
+		(o.PrivateKey == "" && o.PrivateKeyPEM == "") ||
+		(o.ServerCertificate == "" && o.ServerCertificatePEM == "")) {
 		return fmt.Errorf("安全连接须提供客户端证书、私钥和可信服务器证书")
 	}
 	if o.Username == "" && o.Password != "" {
@@ -152,13 +158,10 @@ func Dial(ctx context.Context, target string, o Options) (*Client, error) {
 	if chosen == nil {
 		return nil, fmt.Errorf("服务器未提供所选安全策略 %s / %s 或认证方式", o.Policy, o.Mode)
 	}
-	if o.ServerCertificate != "" {
-		trusted, e := os.ReadFile(o.ServerCertificate)
-		if e != nil {
-			return nil, fmt.Errorf("无法读取可信服务器证书: %w", e)
-		}
-		if p, _ := pem.Decode(trusted); p != nil {
-			trusted = p.Bytes
+	if o.ServerCertificate != "" || o.ServerCertificatePEM != "" {
+		trusted, err := trustedCertificate(o)
+		if err != nil {
+			return nil, err
 		}
 		if !bytes.Equal(trusted, chosen.ServerCertificate) {
 			return nil, fmt.Errorf("服务器证书与可信证书不一致")
@@ -171,10 +174,22 @@ func Dial(ctx context.Context, target string, o Options) (*Client, error) {
 		opts = append(opts, sdk.AuthAnonymous())
 	}
 	opts = append(opts, sdk.SecurityFromEndpoint(chosen, auth))
-	if o.Certificate != "" {
+	if o.CertificatePEM != "" {
+		der, err := certificatePEM(o.CertificatePEM)
+		if err != nil {
+			return nil, fmt.Errorf("客户端证书: %w", err)
+		}
+		opts = append(opts, sdk.Certificate(der))
+	} else if o.Certificate != "" {
 		opts = append(opts, sdk.CertificateFile(o.Certificate))
 	}
-	if o.PrivateKey != "" {
+	if o.PrivateKeyPEM != "" {
+		key, err := privateKeyPEM(o.PrivateKeyPEM)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, sdk.PrivateKey(key))
+	} else if o.PrivateKey != "" {
 		opts = append(opts, sdk.PrivateKeyFile(o.PrivateKey))
 	}
 	c, err := sdk.NewClient(target, opts...)
@@ -189,6 +204,51 @@ func Dial(ctx context.Context, target string, o Options) (*Client, error) {
 	}
 	return &Client{client: c, options: o, connection: strconv.FormatInt(time.Now().UnixNano(), 36), target: target, endpointHost: hostOf(chosen.EndpointURL)}, nil
 }
+
+func trustedCertificate(o Options) ([]byte, error) {
+	if o.ServerCertificatePEM != "" {
+		der, err := certificatePEM(o.ServerCertificatePEM)
+		if err != nil {
+			return nil, fmt.Errorf("可信服务器证书: %w", err)
+		}
+		return der, nil
+	}
+	trusted, err := os.ReadFile(o.ServerCertificate)
+	if err != nil {
+		return nil, fmt.Errorf("无法读取可信服务器证书: %w", err)
+	}
+	if block, _ := pem.Decode(trusted); block != nil {
+		return block.Bytes, nil
+	}
+	return trusted, nil
+}
+
+func certificatePEM(text string) ([]byte, error) {
+	block, _ := pem.Decode([]byte(text))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("须提供 PEM 格式的证书")
+	}
+	return block.Bytes, nil
+}
+
+func privateKeyPEM(text string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(text))
+	if block != nil {
+		switch block.Type {
+		case "RSA PRIVATE KEY":
+			if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+				return key, nil
+			}
+		case "PRIVATE KEY":
+			key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+			if rsaKey, ok := key.(*rsa.PrivateKey); err == nil && ok {
+				return rsaKey, nil
+			}
+		}
+	}
+	return nil, errors.New("须提供 PEM 格式的未加密 RSA 私钥（PKCS #1 或 PKCS #8）")
+}
+
 func (c *Client) Close() error {
 	if c.closed.Swap(true) {
 		return nil
